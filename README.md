@@ -4,7 +4,7 @@ This repo contains the Terraform Code used in the ROI Training Course: Hands-On 
 
 https://www.roitraining.com/course-815-hands-on-terraform/ 
 
-There are code samples for AWS, Azure, and Google Cloud. See the respective subfolders for each Cloud Provider.
+There are code samples for AWS and Kubernetes.
 
 For more information contact ROI Training:  
 Contact Us: 1-800-764-9877  
