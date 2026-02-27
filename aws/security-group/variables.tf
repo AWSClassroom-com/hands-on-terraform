@@ -22,3 +22,7 @@ variable "route_table_name" {
   type        = string
   description = "Name of the route table for the VPC"
 }
+variable "security_group_name" {
+  type        = string
+  description = "Name of the security group for the Web Servers"
+}
