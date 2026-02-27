@@ -1,8 +1,8 @@
 variable "account" {
   type        = string
-  description = "The name of the account for this ....."
+  description = "The AWS account Name."
 }
 variable "region" {
   type    = string
-  default = "us-east-1"
+  default = "us-east-2"
 }

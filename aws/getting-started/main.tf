@@ -3,6 +3,7 @@ resource "aws_instance" "vm" {
   instance_type = "t3.medium"
 
   tags = {
-    Name = "${var.account}-vm"
+    Name  = "userxx-${var.account}-vm"
+    phase = "testing"
   }
 }
