@@ -1,48 +1,22 @@
-data "aws_availability_zones" "available" {}
-
-# --- Networking ---
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags                 = { Name = "userxx-rds-vpc" }
-}
-
-resource "aws_subnet" "subnet1" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.subnet1_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = false
-  tags                    = { Name = "userxx-db-subnet-1" }
-}
-
-resource "aws_subnet" "subnet2" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.subnet2_cidr
-  availability_zone       = data.aws_availability_zones.available.names[1]
-  map_public_ip_on_launch = false
-  tags                    = { Name = "userxx-db-subnet-2" }
-}
-
 resource "aws_db_subnet_group" "rds" {
-  name       = "userxx-rds-subnet-group"
-  subnet_ids = [aws_subnet.subnet1.id, aws_subnet.subnet2.id]
-  tags       = { Name = "userxx-rds-subnet-group" }
+  name       = var.db_subnet_group_name
+  subnet_ids = [aws_subnet.db_subnet_a.id, aws_subnet.db_subnet_b.id]
+  tags       = { Name = var.db_subnet_group_name }
 }
 
 # --- Security Group (Modern Rules) ---
 resource "aws_security_group" "rds" {
-  name        = "userxx-rds-sg"
+  name        = var.rds_security_group_name
   description = "Allow Postgres Access"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = aws_vpc.custom-vpc.id
 
-  tags = { Name = "userxx-rds-sg" }
+  tags = { Name = var.rds_security_group_name }
 }
 
-# Allow Postgres port (5432) from everywhere (for lab simplicity)
-resource "aws_vpc_security_group_ingress_rule" "postgres" {
+# Allow Postgres from existing app/web security group
+resource "aws_vpc_security_group_ingress_rule" "postgres_from_app_sg" {
   security_group_id = aws_security_group.rds.id
-  cidr_ipv4         = "0.0.0.0/0"
+  referenced_security_group_id = aws_security_group.allow-http-ssh.id
   from_port         = 5432
   ip_protocol       = "tcp"
   to_port           = 5432
@@ -56,14 +30,14 @@ resource "aws_vpc_security_group_egress_rule" "allow_all" {
 
 # --- RDS Postgres ---
 resource "aws_db_instance" "postgres" {
-  identifier        = "userxx-rds-postgres"
+  identifier        = var.db_identifier
   engine            = "postgres"
-  engine_version    = "16.3"
-  instance_class    = "db.t4g.micro"
-  allocated_storage = 20
+  engine_version    = var.db_engine_version
+  instance_class    = var.db_instance_class
+  allocated_storage = var.db_allocated_storage
   storage_type      = "gp3"
 
-  db_name  = "appdb"
+  db_name  = var.db_name
   username = var.db_username
 
   # Modern Security: Let AWS manage the password in Secrets Manager
@@ -77,5 +51,5 @@ resource "aws_db_instance" "postgres" {
   skip_final_snapshot = true
   deletion_protection = false
 
-  tags = { Name = "userxx-rds-postgres" }
+  tags = { Name = var.db_identifier }
 }

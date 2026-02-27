@@ -1,24 +1,28 @@
 variable "region" {
   type    = string
-  default = "us-east-1"
+  default = "us-east-2"
 }
-
+variable "vpc_name" {
+  type        = string
+  description = "Name of the VPC for the application"
+}
 variable "vpc_cidr" {
-  type    = string
-  default = "10.0.0.0/16"
+  type        = string
+  description = "CIDR block for the VPC"
 }
-
-variable "subnet1_cidr" {
-  type    = string
-  default = "10.0.1.0/24"
+variable "public_subnet_a_name" {
+  type        = string
+  description = "Name of the public subnet A"
 }
-
-variable "subnet2_cidr" {
-  type    = string
-  default = "10.0.2.0/24"
+variable "public_subnet_a_cidr" {
+  type        = string
+  description = "CIDR block for the public subnet A"
 }
-
-variable "db_username" {
-  type    = string
-  default = "postgres"
+variable "route_table_name" {
+  type        = string
+  description = "Name of the route table for the VPC"
+}
+variable "security_group_name" {
+  type        = string
+  description = "Name of the security group for the Web Servers"
 }
