@@ -16,6 +16,6 @@ rds_security_group_name     = "<userxx>-rds-sg"
 db_identifier               = "<userxx>-rds-postgres"
 db_username                 = "postgres"
 db_name                     = "appdb"
-db_engine_version           = "17.3"
+db_engine_version           = "17.9"
 db_instance_class           = "db.t4g.micro"
 db_allocated_storage        = 20

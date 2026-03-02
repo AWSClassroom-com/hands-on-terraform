@@ -10,16 +10,18 @@ resource "aws_security_group" "rds" {
   description = "Allow Postgres Access"
   vpc_id      = aws_vpc.custom-vpc.id
 
-  tags = { Name = var.rds_security_group_name }
+  tags = {
+    Name = var.rds_security_group_name
+  }
 }
 
 # Allow Postgres from existing app/web security group
 resource "aws_vpc_security_group_ingress_rule" "postgres_from_app_sg" {
-  security_group_id = aws_security_group.rds.id
+  security_group_id            = aws_security_group.rds.id
   referenced_security_group_id = aws_security_group.allow-http-ssh.id
-  from_port         = 5432
-  ip_protocol       = "tcp"
-  to_port           = 5432
+  from_port                    = 5432
+  ip_protocol                  = "tcp"
+  to_port                      = 5432
 }
 
 resource "aws_vpc_security_group_egress_rule" "allow_all" {
@@ -51,5 +53,7 @@ resource "aws_db_instance" "postgres" {
   skip_final_snapshot = true
   deletion_protection = false
 
-  tags = { Name = var.db_identifier }
+  tags = {
+    Name = var.db_identifier 
+  }
 }

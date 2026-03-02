@@ -43,7 +43,6 @@ variable "db_name" {
 variable "db_engine_version" {
   type        = string
   description = "PostgreSQL engine version"
-  default     = "17.3"
 }
 variable "db_instance_class" {
   type        = string
