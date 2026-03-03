@@ -1,4 +1,7 @@
-account        = "my-account"
-region         = "us-east-1"
-instance_type  = "t3.micro"
-instance_count = 2
+region               = "us-east-2"
+vpc_name             = "<userxx>-vpc"
+vpc_cidr             = "192.168.0.0/20"
+public_subnet_a_name = "<userxx>-public-subnet-a"
+public_subnet_a_cidr = "192.168.0.0/24"
+route_table_name     = "<userxx>-public-route-table"
+security_group_name  = "<userxx>-allow-http-ssh"

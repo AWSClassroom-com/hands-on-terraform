@@ -1,36 +1,28 @@
-variable "account" {
-  description = "The name of the current account."
-  type        = string
-  default     = "My Account"
-}
-
 variable "region" {
   type    = string
   default = "us-east-2"
 }
-
-variable "image_id" {
-  description = "The id of the machine image (AMI) to use for the server."
-  type        = map(string)
-  default = {
-    us-east-1 = "ami-0532be01f26a3de55",
-    us-east-2 = "ami-03ea746da1a2e36e7"
-  }
-}
-
-variable "instance_type" {
-  description = "The size of the VM instances."
+variable "vpc_name" {
   type        = string
-  default     = "t3.micro"
+  description = "Name of the VPC for the application"
 }
-
-variable "instance_count" {
-  description = "Number of instances to provision."
-  type        = number
-  default     = 1
-
-  validation {
-    condition     = var.instance_count > 0 && var.instance_count <= 5
-    error_message = "Instance count must be between 1 and 5."
-  }
+variable "vpc_cidr" {
+  type        = string
+  description = "CIDR block for the VPC"
+}
+variable "public_subnet_a_name" {
+  type        = string
+  description = "Name of the public subnet A"
+}
+variable "public_subnet_a_cidr" {
+  type        = string
+  description = "CIDR block for the public subnet A"
+}
+variable "route_table_name" {
+  type        = string
+  description = "Name of the route table for the VPC"
+}
+variable "security_group_name" {
+  type        = string
+  description = "Name of the security group for the Web Servers"
 }
