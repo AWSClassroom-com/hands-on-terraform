@@ -1,0 +1,9 @@
+region               = "us-east-2"
+vpc_name             = "<userxx>-vpc"
+vpc_cidr             = "192.168.0.0/20"
+route_table_name     = "<userxx>-public-route-table"
+security_group_name  = "<userxx>-allow-http-ssh"
+account              = "userxx"
+instance_type        = "t3.small"
+instance_count_min   = 2
+instance_count_max   = 4
