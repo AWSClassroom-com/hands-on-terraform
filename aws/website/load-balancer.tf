@@ -6,8 +6,8 @@ resource "aws_lb" "web_alb" {
   name               = "${var.account}-alb"
   internal           = false
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.allow-http.id]
-  subnets            = [aws_subnet.subnet-a.id, aws_subnet.subnet-b.id]
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = values(aws_subnet.public_subnets)[*].id
 
 }
 
@@ -18,7 +18,7 @@ resource "aws_lb_target_group" "web_tg" {
   name     = "${var.account}-tg"
   port     = 80
   protocol = "HTTP"
-  vpc_id   = aws_vpc.vpc.id
+  vpc_id   = aws_vpc.custom-vpc.id
 
   health_check {
     path                = "/"

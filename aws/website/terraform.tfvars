@@ -1,12 +1,12 @@
-account            = "userxx"
-
+region               = "us-east-2"
+vpc_name             = "<userxx>-vpc"
+vpc_cidr             = "192.168.0.0/20"
+public_subnet_a_name = "<userxx>-public-subnet-a"
+public_subnet_a_cidr = "192.168.0.0/24"
+route_table_name     = "<userxx>-public-route-table"
+security_group_name  = "<userxx>-allow-http-ssh"
+account              = "userxx"
 # VM variables
-region             = "us-east-1"
-instance_type      = "t3.micro"
-instance_count_min = 2
-instance_count_max = 4
-
-# Network variables
-vpc_cidr           = "192.168.0.0/16"
-subnet_a_cidr      = "192.168.1.0/24"
-subnet_b_cidr      = "192.168.2.0/24"
+instance_type        = "t3.small"
+instance_count_min   = 2
+instance_count_max   = 2

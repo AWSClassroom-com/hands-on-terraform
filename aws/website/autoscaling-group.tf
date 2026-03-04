@@ -9,11 +9,10 @@ resource "aws_launch_template" "web_template" {
   user_data = filebase64("${path.module}/install_space_invaders.sh")
 
   network_interfaces {
-    associate_public_ip_address = true
+    associate_public_ip_address = false
     delete_on_termination       = true
     security_groups = [
-      aws_security_group.allow-http.id,
-      aws_security_group.allow-ssh.id
+      aws_security_group.allow-http-ssh.id
     ]
   }
 
@@ -34,7 +33,7 @@ resource "aws_autoscaling_group" "web_asg" {
   max_size                  = var.instance_count_max
   min_size                  = var.instance_count_min
   desired_capacity          = var.instance_count_min
-  vpc_zone_identifier       = [aws_subnet.subnet-a.id, aws_subnet.subnet-b.id]
+  vpc_zone_identifier       = aws_subnet.private_subnets[*].id
   health_check_type         = "ELB"
   health_check_grace_period = 300
 
@@ -55,10 +54,3 @@ resource "aws_autoscaling_group" "web_asg" {
     create_before_destroy = true
   }
 }
-
-
-
-
-
-
-
