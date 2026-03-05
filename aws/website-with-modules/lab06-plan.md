@@ -1,211 +1,1436 @@
-# Lab 06 - Refactor to Modules (Revised Plan)
+# Lab 06 — Refactor to Modules: Planning Document
 
-This lab refactors the existing flat Terraform configuration into modules without rebuilding infrastructure. Students stay in the same working folder and same backend/state they already use from prior labs. The core pattern is iterative: make a focused refactor, add the matching `moved` blocks immediately, and run `terraform plan` to verify no unintended add/change/destroy before moving on.
+> **Audience**: Instructor planning guide. Not student-facing.
+> **Prerequisite state**: Students have completed Labs 01–05 in a single flat folder:
+> `s3-bucket → vpc → security-group → language → website`
+> All resources are live and managed in one Terraform state file.
+> **Continuity**: Students stay in the same working folder and use the same backend/state from prior labs. This lab is refactor-only — no teardown, no new backend, no new workspace.
 
-## Assumptions
-- Students start from the end of the prior lab in the same folder.
-- Backend/state are already configured and in use.
-- Validation command for this lab is `terraform plan` (not `terraform init -backend=false` / `terraform validate`).
-- Never use `user01` for test execution in instructor automation.
+---
 
-## Task 1 - Preflight and Baseline Cleanup
+## Why This Design
 
-Before refactoring, students establish a clean baseline and ensure no stale migration metadata remains.
+The most common failure in refactor labs is treating module extraction like a greenfield rebuild. That leads to unnecessary destroy/recreate operations and hides the real learning objective, which is state-preserving architecture change. This plan keeps students anchored to one continuous environment and reinforces the sequence they must internalize:
 
-Steps:
-1. Confirm workspace is the same folder used in the previous lab.
-2. If old `moved` blocks exist from prior experiments, move them out of active config (for example to `moved.tf.bak`).
+1. Refactor code structure.
+2. Map old resource addresses to new addresses (`moved` blocks) **immediately, in the same task**.
+3. Run `terraform plan` and verify no unintended add/change/destroy.
+4. Continue only when plan is clean.
+
+### Core Rules (Must Stay True for Entire Lab)
+
+1. Students stay in the same folder used at the end of the previous lab.
+2. Students keep the same backend/state. Do **not** use a backend-disabled workflow.
+3. Validation after each task is `terraform plan` (not `terraform init -backend=false` / `terraform validate`).
+4. `moved` blocks are added in the same task that introduces the address change — never deferred.
+5. `moved` blocks are migration scaffolding and **must** be removed after convergence.
+6. Load balancer DNS ownership stays in the load balancer module and is re-exposed via root output.
+7. Never use `user01` in instructor test automation (use unique run tags).
+
+---
+
+## Table of Contents
+
+1. [Existing Resource Inventory](#1-existing-resource-inventory)
+2. [Design Decisions](#2-design-decisions)
+3. [Directory Structure](#3-directory-structure)
+4. [Phase 1 — Pure Refactor Into Modules](#4-phase-1--pure-refactor-into-modules)
+5. [Phase 2 — Optimize to Show Module Power](#5-phase-2--optimize-to-show-module-power)
+6. [Phase 3 — Optional Challenge: Registry Module](#6-phase-3--optional-challenge-registry-module)
+7. [Complete Moved Blocks Reference](#7-complete-moved-blocks-reference)
+8. [Variable & Output Contract Reference](#8-variable--output-contract-reference)
+9. [Validation Checklist](#9-validation-checklist)
+
+---
+
+## 1. Existing Resource Inventory
+
+These are the resources in state after the `website` lab (the merged flat configuration).
+Every resource must be accounted for in the module refactor.
+
+### S3 Bucket (from Lab 01 — `bucket.tf`)
+| # | Resource Address | Type |
+|---|---|---|
+| 1 | `aws_s3_bucket.bucket` | `aws_s3_bucket` |
+| 2 | `aws_s3_bucket_ownership_controls.this` | `aws_s3_bucket_ownership_controls` |
+| 3 | `aws_s3_bucket_public_access_block.this` | `aws_s3_bucket_public_access_block` |
+| 4 | `aws_s3_bucket_versioning.versioning` | `aws_s3_bucket_versioning` |
+| 5 | `aws_s3_bucket_server_side_encryption_configuration.encryption` | `aws_s3_bucket_server_side_encryption_configuration` |
+
+### Networking (from Labs 02 + 04 — `custom-vpc.tf`, `locals.tf`, `private-network.tf`)
+| # | Resource Address | Type | Notes |
+|---|---|---|---|
+| 6 | `aws_vpc.custom-vpc` | `aws_vpc` | DNS hostnames + DNS support enabled |
+| 7 | `aws_subnet.public_subnets` | `aws_subnet` | `for_each` keyed by AZ name |
+| 8 | `aws_internet_gateway.igw` | `aws_internet_gateway` | |
+| 9 | `aws_nat_gateway.ngw` | `aws_nat_gateway` | Regional, public connectivity |
+| 10 | `aws_route_table.public_rt` | `aws_route_table` | Routes to IGW |
+| 11 | `aws_route_table_association.public_assoc` | `aws_route_table_association` | `for_each` matching public_subnets |
+| 12 | `aws_subnet.private_subnets` | `aws_subnet` | `count` by AZ index |
+| 13 | `aws_route_table.private_rt` | `aws_route_table` | Routes to NAT GW |
+| 14 | `aws_route_table_association.private_assoc` | `aws_route_table_association` | `count` matching private_subnets |
+
+**Data sources** (not stateful — no moved blocks needed):
+- `data.aws_availability_zones.available`
+- `locals.public_subnets` (derived map of AZ→CIDR)
+
+### Security Groups (from Labs 03 + 05 — `sec-groups.tf`)
+| # | Resource Address | Type | Notes |
+|---|---|---|---|
+| 15 | `aws_security_group.allow-http-ssh` | `aws_security_group` | App instances SG |
+| 16 | `aws_vpc_security_group_ingress_rule.allow-http-ipv4` | Ingress rule | HTTP from ALB SG only |
+| 17 | `aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` | Ingress rule | SSH from 0.0.0.0/0 |
+| 18 | `aws_vpc_security_group_egress_rule.allow-all-outbound` | Egress rule | All outbound |
+| 19 | `aws_security_group.alb_sg` | `aws_security_group` | ALB SG (internet-facing) |
+| 20 | `aws_vpc_security_group_ingress_rule.alb_http_in` | Ingress rule | HTTP from 0.0.0.0/0 |
+| 21 | `aws_vpc_security_group_egress_rule.alb_all_out` | Egress rule | All outbound |
+
+**Cross-reference**: Resource #16 (`allow-http-ipv4`) uses `referenced_security_group_id` pointing to resource #19 (`alb_sg`). This means the app SG and ALB SG are coupled.
+
+### Load Balancer (from Lab 05 — `load-balancer.tf`)
+| # | Resource Address | Type |
+|---|---|---|
+| 22 | `aws_lb.web_alb` | `aws_lb` (ALB) |
+| 23 | `aws_lb_target_group.web_tg` | `aws_lb_target_group` |
+| 24 | `aws_lb_listener.web_listener` | `aws_lb_listener` |
+
+### Autoscaling Group (from Lab 05 — `autoscaling-group.tf`)
+| # | Resource Address | Type |
+|---|---|---|
+| 25 | `aws_launch_template.web_template` | `aws_launch_template` |
+| 26 | `aws_autoscaling_group.web_asg` | `aws_autoscaling_group` |
+
+**Total: 26 managed resources + 1 data source**
+
+---
+
+## 2. Design Decisions
+
+### Same folder, same state, plan-driven validation
+Students do **not** create a new directory or switch backends. They continue in the same folder they finished Lab 05 in. Every validation gate is `terraform plan` (not `terraform init -backend=false` / `terraform validate`). This ensures students see real state moves reflected in the plan.
+
+### `moved` blocks are in-task, not deferred
+Each task that introduces an address change must include the corresponding `moved` blocks and a `terraform plan` gate. This reinforces the refactor loop and catches mistakes early. Every task ends with a plan gate, so coverage is continuously verified — no separate audit step is needed.
+
+### Mandatory moved cleanup after convergence
+`moved` blocks are migration scaffolding. After the state converges (apply + clean plan), they **must** be removed. Task 8 is mandatory, not optional.
+
+### Why keep all networking in one module for Phase 1?
+Public subnets use `for_each` (keyed by AZ name: `aws_subnet.public_subnets["us-east-2a"]`).
+Private subnets use `count` (indexed: `aws_subnet.private_subnets[0]`).
+
+A single generic "subnet" module called twice would require both calls to use the same iteration strategy. Changing `count` to `for_each` (or vice versa) changes state addresses, which means **additional** moved blocks and potential confusion. In Phase 1 we keep both subnet types inside one `networking` module to avoid this. Phase 2 standardizes on `for_each` for both and splits them out.
+
+### Why keep both security groups in one module for Phase 1?
+The app SG's HTTP ingress rule references the ALB SG's ID (`referenced_security_group_id`). Keeping both in one module avoids a circular dependency and simplifies wiring. Phase 2 splits them with a two-pass approach: create ALB SG first, pass its ID to the app SG module.
+
+### Where does `install_space_invaders.sh` live?
+The flat config uses `filebase64("${path.module}/install_space_invaders.sh")`. When the launch template moves into a module, `path.module` points to the module directory. Two options:
+
+- **Option A**: Put the script in `modules/autoscaling-group/` — simple but couples the module to this specific app.
+- **Option B**: Pass `user_data_base64` as a variable from root — the root calls `filebase64()` and passes the result. Module stays generic.
+
+**Recommendation**: Option B for better module reusability (and it teaches separation of concerns). The script stays at the root level.
+
+### Variable naming: `instance_count_max` validation
+The flat `website/variables.tf` intentionally has `instance_count_max >= 3` while `terraform.tfvars` sets it to `2`. This is a deliberate teaching moment (students hit the error, then fix to `4`). In the modules version, `terraform.tfvars` will set `instance_count_max = 4`.
+
+### Old `moved` blocks from Lab 04 (language)
+The flat config's `custom-vpc.tf` has moved blocks from the `subnet-a → public_subnets["<az>"]` migration. Those are already applied in state and have no effect. **Do not carry them into the modules version.** Only new flat→module moved blocks are needed.
+
+### Remove obsolete root variables
+`public_subnet_a_name` and `public_subnet_a_cidr` are vestigial from Lab 02 (single subnet). They were superseded by the dynamic subnets in Lab 04 and are not consumed by any module. They should be **removed** from root `variables.tf` and `terraform.tfvars` as part of Task 6. This teaches students that refactoring includes tech-debt cleanup, not just file movement.
+
+---
+
+## 3. Directory Structure
+
+### Phase 1 End State
+
+```
+website-with-modules/       (same folder as prior labs)
+├── modules/
+│   ├── s3-bucket/
+│   │   ├── main.tf              # 5 resources
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── networking/
+│   │   ├── main.tf              # 9 resources + data source + locals
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── security-groups/
+│   │   ├── main.tf              # 7 resources (2 SGs + 5 rules)
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── load-balancer/
+│   │   ├── main.tf              # 3 resources
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   └── autoscaling-group/
+│       ├── main.tf              # 2 resources
+│       ├── variables.tf
+│       └── output.tf
+├── install_space_invaders.sh
+├── provider.tf
+├── main.tf                      # Module calls
+├── variables.tf                 # Root variables (obsolete ones removed)
+├── terraform.tfvars
+├── output.tf
+└── moved.tf                     # 26 moved blocks (removed after Task 8)
+```
+
+### Phase 2 End State
+
+```
+website-with-modules/
+├── modules/
+│   ├── s3-bucket/                # Unchanged from Phase 1
+│   │   └── ...
+│   ├── vpc/                      # NEW: Just core VPC + IGW + NAT GW
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── subnets/                  # NEW: Generic — called twice (public + private)
+│   │   ├── main.tf              # Uses for_each for both
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── security-group/           # RENAMED: Generic — called per SG
+│   │   ├── main.tf              # 1 SG + dynamic rules
+│   │   ├── variables.tf
+│   │   └── output.tf
+│   ├── load-balancer/            # Unchanged from Phase 1
+│   │   └── ...
+│   └── autoscaling-group/        # Unchanged from Phase 1
+│       └── ...
+├── install_space_invaders.sh
+├── provider.tf
+├── main.tf                       # Updated module calls
+├── variables.tf
+├── terraform.tfvars
+├── output.tf
+└── moved.tf                      # Updated with Phase 2 moves (removed after final cleanup)
+```
+
+### Phase 3 End State (Optional Challenge)
+
+```
+website-with-modules/
+├── modules/
+│   ├── s3-bucket/                # Unchanged from Phase 2
+│   │   └── ...
+│   ├── vpc/                      # Unchanged from Phase 2
+│   │   └── ...
+│   ├── subnets/                  # Unchanged from Phase 2
+│   │   └── ...
+│   ├── load-balancer/            # Unchanged from Phase 2
+│   │   └── ...
+│   └── autoscaling-group/        # Unchanged from Phase 2
+│       └── ...
+│   (security-group/ module removed — replaced by registry module)
+├── main.tf                       # Registry module calls replace local SG module
+├── moved.tf                      # Maps Phase 2 custom SG → registry internal addresses
+└── (all other root files unchanged from Phase 2)
+```
+
+---
+
+## 4. Phase 1 — Pure Refactor Into Modules
+
+**Goal**: Reorganize the existing flat resources into modules with zero infrastructure changes. Every resource keeps its exact same configuration. Only the Terraform address changes (e.g., `aws_vpc.custom-vpc` → `module.networking.aws_vpc.custom-vpc`). Students stay in the same folder and use the same backend throughout.
+
+---
+
+### Task 1: Baseline and Migration Metadata Reset
+
+Before any refactoring begins, students must confirm they are starting from a clean, known-good state. This task establishes that discipline: verify the existing deployment is healthy, remove any leftover migration artifacts from prior labs, and confirm a clean plan. Without this step, any errors introduced during refactoring become much harder to diagnose.
+
+**What students do**:
+1. Confirm they are in the same folder/state chain from the prior lab.
+2. If stale `moved` blocks exist from prior lab experiments (e.g., the Lab 04 subnet-a migration), move them out of active config (e.g., rename to `moved.tf.bak` or delete them).
 3. Run `terraform plan`.
-4. If plan is not clean, resolve drift before continuing.
+4. Require clean plan (no create/change/destroy from unrelated drift) before moving forward.
 
-Validation:
-- `terraform plan` shows no unexpected changes.
+**Validation**:
+```bash
+terraform plan
+# Expected: "No changes. Your infrastructure matches the configuration."
+```
 
-Task Summary:
-Students verify they are starting from a stable baseline and understand that refactoring should preserve infrastructure, not recreate it.
+If plan is not clean:
+- **Stop the lab.**
+- Resolve baseline drift first.
 
-## Task 2 - Create S3 Module and Move S3 Addresses
+**Teaching points**:
+- This lab is refactor-only, not redeploy.
+- Students must understand that a clean starting baseline is a prerequisite for a safe refactor.
+- Old `moved` blocks from prior labs are already applied in state and will not affect this lab, but removing them reduces confusion.
 
-Students modularize the S3 state bucket resources first, then immediately map old addresses with `moved` blocks.
+**Task conclusion**:
+Students begin from a known-good baseline and understand that refactoring should preserve infrastructure, not recreate it.
 
-Steps:
-1. Add `modules/s3-bucket`.
-2. Move existing S3 resource blocks into the module.
-3. Wire root module call and root outputs.
-4. Add S3-related `moved` blocks in `moved.tf`.
-5. Run `terraform plan`.
+---
 
-Validation:
-- `terraform plan` shows S3 addresses moved and no recreate.
+### Task 2: Build the S3 Bucket Module (+ Moved Blocks)
 
-Task Summary:
-Students learn the core migration loop: refactor, map state addresses, verify plan.
+The S3 bucket is the simplest resource group to modularize — five resources with no cross-dependencies on other modules. Starting here lets students learn the full module-creation workflow (create directory, move resources, wire variables/outputs, add moved blocks, verify with plan) on the easiest target before tackling more complex resource groups.
 
-## Task 3 - Create Networking Module and Move VPC/Subnet/Route Resources
-
-Students modularize VPC, public/private subnets, route tables, and associations while preserving current behavior.
-
-Steps:
-1. Add `modules/networking`.
-2. Move VPC, subnet, NAT, IGW, route table, and association resources.
-3. Keep current logic intact (`for_each` for public subnets and `count` for private subnets in Phase 1).
-4. Add networking-related `moved` blocks.
-5. Run `terraform plan`.
-
-Validation:
-- `terraform plan` shows moved resources only, no recreate.
-
-Task Summary:
-Students practice preserving behavior during structural changes and understand how iteration strategy affects addresses.
-
-## Task 4 - Create Security Groups Module and Move SG Resources
-
-Students modularize app and ALB security groups and all associated ingress/egress rule resources.
-
-Steps:
-1. Add `modules/security-groups`.
-2. Move both SG resources and all rule resources.
-3. Wire module inputs/outputs in root.
-4. Add SG-related `moved` blocks.
-5. Run `terraform plan`.
-
-Validation:
-- `terraform plan` shows moved SG resources with no destructive actions.
-
-Task Summary:
-Students see how tightly related resources are grouped as a single module boundary to reduce cross-module coupling.
-
-## Task 5 - Create Load Balancer Module and Move LB Resources
-
-Students modularize ALB, target group, and listener, then map addresses.
-
-Steps:
-1. Add `modules/load-balancer`.
-2. Move ALB, TG, and listener resources.
-3. Wire module outputs for `alb_dns_name` and `target_group_arn`.
-4. Keep `load_balancer_dns` root output sourced from the load balancer module.
-5. Add LB-related `moved` blocks.
-6. Run `terraform plan`.
-
-Validation:
-- `terraform plan` remains clean except moved notices.
-
-Task Summary:
-Students learn clean module contracts: the LB module owns ALB DNS output, and downstream modules consume only required outputs.
-
-## Task 6 - Create Autoscaling Module, Move ASG Resources, and Remove Legacy Root Inputs
-
-Students modularize launch template + ASG and remove long-obsolete root variables.
-
-Steps:
-1. Add `modules/autoscaling-group`.
-2. Move launch template and ASG resources.
-3. Wire root/module inputs and outputs.
-4. Add ASG-related `moved` blocks.
-5. Remove deprecated root vars from modularized configs:
-   - `public_subnet_a_name`
-   - `public_subnet_a_cidr`
-6. Remove matching entries from modularized `terraform.tfvars`.
+**What students do**:
+1. Create `modules/s3-bucket/main.tf` — move the 5 S3 resources verbatim from the flat `bucket.tf`. No changes to resource names or configuration.
+2. Create `modules/s3-bucket/variables.tf` — this module needs **no variables** (the bucket_prefix and all config are hardcoded, just as they were in the flat config).
+   - *Alternative*: If you want to parameterize `bucket_prefix` and tag values, add variables here. This is a Phase 2 concern but could be a quick win.
+3. Create `modules/s3-bucket/output.tf` — output the `bucket_name` (= `aws_s3_bucket.bucket.id`).
+4. Add the `module "s3_bucket"` block to root `main.tf`.
+5. Add the `bucket_name` output to root `output.tf` (referencing `module.s3_bucket.bucket_name`).
+6. **Add S3 moved blocks to `moved.tf` immediately** (5 entries — see [Section 7](#7-complete-moved-blocks-reference)).
 7. Run `terraform plan`.
 
-Validation:
-- `terraform plan` shows no unintended changes.
+**Module interface**:
+```hcl
+# modules/s3-bucket/variables.tf
+# (none required — all values are hardcoded as in the original)
 
-Task Summary:
-Students complete modularization and reduce technical debt by deleting unused inputs instead of carrying dead configuration.
+# modules/s3-bucket/output.tf
+output "bucket_name" {
+  value = aws_s3_bucket.bucket.id
+}
+```
 
-## Task 7 - Moved Block Audit and Final Phase 1 Plan Check
+**Root main.tf addition**:
+```hcl
+module "s3_bucket" {
+  source = "./modules/s3-bucket"
+}
+```
 
-Students verify that every migrated resource has an explicit move mapping.
+**Root output.tf addition**:
+```hcl
+output "bucket_name" {
+  description = "The name of the S3 bucket to use for remote state"
+  value       = module.s3_bucket.bucket_name
+}
+```
 
-Steps:
-1. Review all resources moved so far.
-2. Confirm `moved.tf` includes every old-to-new address mapping.
-3. Run `terraform plan`.
+**Moved blocks added this task** (in `moved.tf`):
+```hcl
+# --- S3 Bucket (5) ---
+moved {
+  from = aws_s3_bucket.bucket
+  to   = module.s3_bucket.aws_s3_bucket.bucket
+}
+moved {
+  from = aws_s3_bucket_ownership_controls.this
+  to   = module.s3_bucket.aws_s3_bucket_ownership_controls.this
+}
+moved {
+  from = aws_s3_bucket_public_access_block.this
+  to   = module.s3_bucket.aws_s3_bucket_public_access_block.this
+}
+moved {
+  from = aws_s3_bucket_versioning.versioning
+  to   = module.s3_bucket.aws_s3_bucket_versioning.versioning
+}
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.encryption
+  to   = module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.encryption
+}
+```
 
-Validation:
-- `terraform plan` shows no create/destroy due to missing address mapping.
+**Plan gate**:
+```bash
+terraform plan
+# Expected: S3 resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
 
-Task Summary:
-Students reinforce state-safety discipline and learn how missing `moved` entries surface in plan output.
+**Teaching points**:
+- Simplest possible module — no inputs, one output.
+- Shows how `module.X.output_name` works.
+- The S3 bucket was the first thing ever created and is still here.
+- `moved` blocks are added **now**, not deferred to a later task. This is the migration loop: refactor → map → plan → verify.
 
-## Task 8 - Apply and Functional Verification
+**Task conclusion**:
+Students practice the migration loop on a small, low-risk slice and gain confidence with `moved` block syntax before tackling more complex modules.
 
-Students apply the finished Phase 1 refactor and verify app behavior.
+---
 
-Steps:
-1. Run `terraform apply`.
-2. Retrieve ALB DNS output.
-3. Confirm app responds from ALB endpoint.
-4. Run `terraform plan` to confirm idempotency.
+### Task 3: Build the Networking Module (+ Moved Blocks)
 
-Validation:
-- App responds successfully.
-- Final plan is clean.
+Networking is the largest resource group (9 resources plus a data source and locals). In Phase 1 we keep all networking — VPC, subnets, gateways, route tables — in a single module to avoid changing the iteration strategy (`count` vs `for_each`). This deliberate choice keeps Phase 1 as a pure address-only migration. Students will split this module in Phase 2.
 
-Task Summary:
-Students prove that refactoring changed structure, not behavior.
+**What students do**:
+1. Create `modules/networking/main.tf` — move these resources verbatim:
+   - `data "aws_availability_zones" "available"` (from `locals.tf`)
+   - `locals { public_subnets = ... }` (from `locals.tf`)
+   - `aws_vpc.custom-vpc` (from `custom-vpc.tf`)
+   - `aws_subnet.public_subnets` with `for_each` (from `custom-vpc.tf`)
+   - `aws_internet_gateway.igw` (from `custom-vpc.tf`)
+   - `aws_nat_gateway.ngw` (from `custom-vpc.tf`)
+   - `aws_route_table.public_rt` (from `custom-vpc.tf`)
+   - `aws_route_table_association.public_assoc` with `for_each` (from `custom-vpc.tf`)
+   - `aws_subnet.private_subnets` with `count` (from `private-network.tf`)
+   - `aws_route_table.private_rt` (from `private-network.tf`)
+   - `aws_route_table_association.private_assoc` with `count` (from `private-network.tf`)
+2. **Do NOT copy the old `moved` blocks** from `custom-vpc.tf` (the `subnet-a → public_subnets` ones). Those are already applied.
+3. Create `modules/networking/variables.tf` — needs: `vpc_cidr`, `vpc_name`, `route_table_name`.
+4. Create `modules/networking/output.tf` — needs to expose: `vpc_id`, `public_subnet_ids` (list), `private_subnet_ids` (list).
+5. Add the `module "networking"` block to root `main.tf`.
+6. **Add networking moved blocks to `moved.tf` immediately** (9 entries — see [Section 7](#7-complete-moved-blocks-reference)).
+7. Run `terraform plan`.
 
-## Task 9 - Mandatory Moved Block Cleanup
+**Module interface**:
+```hcl
+# modules/networking/variables.tf
+variable "vpc_cidr" {
+  type        = string
+  description = "CIDR block for the VPC"
+}
 
-Students finish Phase 1 by removing migration scaffolding only after state has fully converged.
+variable "vpc_name" {
+  type        = string
+  description = "Name of the VPC"
+}
 
-Steps:
+variable "route_table_name" {
+  type        = string
+  description = "Name of the public route table"
+}
+
+# modules/networking/output.tf
+output "vpc_id" {
+  value = aws_vpc.custom-vpc.id
+}
+
+output "public_subnet_ids" {
+  description = "List of public subnet IDs (values from the for_each map)"
+  value       = values(aws_subnet.public_subnets)[*].id
+}
+
+output "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private_subnets[*].id
+}
+```
+
+**Root main.tf addition**:
+```hcl
+module "networking" {
+  source = "./modules/networking"
+
+  vpc_cidr         = var.vpc_cidr
+  vpc_name         = var.vpc_name
+  route_table_name = var.route_table_name
+}
+```
+
+**Moved blocks added this task** (in `moved.tf`):
+```hcl
+# --- Networking (9) ---
+moved {
+  from = aws_vpc.custom-vpc
+  to   = module.networking.aws_vpc.custom-vpc
+}
+moved {
+  from = aws_subnet.public_subnets
+  to   = module.networking.aws_subnet.public_subnets
+}
+moved {
+  from = aws_internet_gateway.igw
+  to   = module.networking.aws_internet_gateway.igw
+}
+moved {
+  from = aws_nat_gateway.ngw
+  to   = module.networking.aws_nat_gateway.ngw
+}
+moved {
+  from = aws_route_table.public_rt
+  to   = module.networking.aws_route_table.public_rt
+}
+moved {
+  from = aws_route_table_association.public_assoc
+  to   = module.networking.aws_route_table_association.public_assoc
+}
+moved {
+  from = aws_subnet.private_subnets
+  to   = module.networking.aws_subnet.private_subnets
+}
+moved {
+  from = aws_route_table.private_rt
+  to   = module.networking.aws_route_table.private_rt
+}
+moved {
+  from = aws_route_table_association.private_assoc
+  to   = module.networking.aws_route_table_association.private_assoc
+}
+```
+
+**Plan gate**:
+```bash
+terraform plan
+# Expected: networking resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+**Teaching points**:
+- Largest module — shows how to wrap complex networking.
+- Data sources and locals move into the module (they're internal implementation details).
+- Outputs shape the module's public API — only expose what other modules need.
+- The `for_each` and `count` patterns are preserved exactly as-is.
+
+**Task conclusion**:
+Students learn to preserve behavior while changing structure, and see how iterator choice (`for_each` vs `count`) affects address stability.
+
+---
+
+### Task 4: Build the Security Groups Module (+ Moved Blocks)
+
+The security groups module introduces cross-resource dependencies within a module: the app SG's HTTP ingress rule references the ALB SG's ID. Keeping both security groups in one module for Phase 1 avoids circular dependency issues and keeps the refactor simple. Students learn how to expose multiple outputs from a single module.
+
+**What students do**:
+1. Create `modules/security-groups/main.tf` — move all 7 resources verbatim from flat `sec-groups.tf`.
+2. Create `modules/security-groups/variables.tf` — needs: `vpc_id`, `security_group_name`, `account`.
+3. Create `modules/security-groups/output.tf` — needs to expose: `app_sg_id`, `alb_sg_id`.
+4. Add the `module "security_groups"` block to root `main.tf`.
+5. **Add SG moved blocks to `moved.tf` immediately** (7 entries — see [Section 7](#7-complete-moved-blocks-reference)).
+6. Run `terraform plan`.
+
+**Module interface**:
+```hcl
+# modules/security-groups/variables.tf
+variable "vpc_id" {
+  type        = string
+  description = "VPC ID to create security groups in"
+}
+
+variable "security_group_name" {
+  type        = string
+  description = "Name of the application security group"
+}
+
+variable "account" {
+  type        = string
+  description = "Account/user name prefix"
+}
+
+# modules/security-groups/output.tf
+output "app_sg_id" {
+  description = "ID of the application security group (allow-http-ssh)"
+  value       = aws_security_group.allow-http-ssh.id
+}
+
+output "alb_sg_id" {
+  description = "ID of the ALB security group"
+  value       = aws_security_group.alb_sg.id
+}
+```
+
+**Root main.tf addition**:
+```hcl
+module "security_groups" {
+  source = "./modules/security-groups"
+
+  vpc_id              = module.networking.vpc_id
+  security_group_name = var.security_group_name
+  account             = var.account
+}
+```
+
+**Moved blocks added this task** (in `moved.tf`):
+```hcl
+# --- Security Groups (7) ---
+moved {
+  from = aws_security_group.allow-http-ssh
+  to   = module.security_groups.aws_security_group.allow-http-ssh
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.allow-http-ipv4
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
+}
+moved {
+  from = aws_vpc_security_group_egress_rule.allow-all-outbound
+  to   = module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound
+}
+moved {
+  from = aws_security_group.alb_sg
+  to   = module.security_groups.aws_security_group.alb_sg
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.alb_http_in
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in
+}
+moved {
+  from = aws_vpc_security_group_egress_rule.alb_all_out
+  to   = module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out
+}
+```
+
+**Plan gate**:
+```bash
+terraform plan
+# Expected: SG resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+**Teaching points**:
+- Cross-module references: `module.networking.vpc_id` flows into this module.
+- Both SGs stay together because the app SG's HTTP rule references the ALB SG — internal coupling that doesn't need to leak out.
+- The module exposes both SG IDs so downstream modules can pick what they need.
+
+**Task conclusion**:
+Students see the value of grouping tightly coupled resources to reduce root clutter and cross-module coupling.
+
+---
+
+### Task 5: Build the Load Balancer Module (+ Moved Blocks)
+
+The load balancer module is the first that consumes outputs from other modules (networking for subnet IDs, security groups for the ALB SG ID). This task reinforces cross-module wiring and teaches students that module output ownership matters — the ALB DNS name output moves from root to the load-balancer module.
+
+**What students do**:
+1. Create `modules/load-balancer/main.tf` — move all 3 ALB resources verbatim from flat `load-balancer.tf`.
+2. Create `modules/load-balancer/variables.tf` — needs: `account`, `vpc_id`, `alb_sg_id`, `public_subnet_ids`.
+3. Create `modules/load-balancer/output.tf` — needs to expose: `alb_dns_name`, `target_group_arn`.
+4. Add the `module "load_balancer"` block to root `main.tf`.
+5. **Keep the `load_balancer_dns` root output sourced from the load balancer module** — the LB module owns this output.
+6. **Add LB moved blocks to `moved.tf` immediately** (3 entries — see [Section 7](#7-complete-moved-blocks-reference)).
+7. Run `terraform plan`.
+
+**Module interface**:
+```hcl
+# modules/load-balancer/variables.tf
+variable "account" {
+  type        = string
+  description = "Account/user name prefix"
+}
+
+variable "vpc_id" {
+  type        = string
+  description = "VPC ID for the target group"
+}
+
+variable "alb_sg_id" {
+  type        = string
+  description = "Security group ID for the ALB"
+}
+
+variable "public_subnet_ids" {
+  type        = list(string)
+  description = "List of public subnet IDs for the ALB"
+}
+
+# modules/load-balancer/output.tf
+output "alb_dns_name" {
+  description = "DNS name of the Application Load Balancer"
+  value       = aws_lb.web_alb.dns_name
+}
+
+output "target_group_arn" {
+  description = "ARN of the target group for the ASG to attach to"
+  value       = aws_lb_target_group.web_tg.arn
+}
+```
+
+**Root main.tf addition**:
+```hcl
+module "load_balancer" {
+  source = "./modules/load-balancer"
+
+  account           = var.account
+  vpc_id            = module.networking.vpc_id
+  alb_sg_id         = module.security_groups.alb_sg_id
+  public_subnet_ids = module.networking.public_subnet_ids
+}
+```
+
+**Important change in module `main.tf`**: The ALB's `subnets` attribute in the flat config is:
+```hcl
+subnets = values(aws_subnet.public_subnets)[*].id
+```
+In the module, the subnet IDs arrive already as a list, so change to:
+```hcl
+subnets = var.public_subnet_ids
+```
+
+**Root output.tf — ALB DNS ownership**:
+```hcl
+output "load_balancer_dns" {
+  value = module.load_balancer.alb_dns_name
+}
+```
+
+**Moved blocks added this task** (in `moved.tf`):
+```hcl
+# --- Load Balancer (3) ---
+moved {
+  from = aws_lb.web_alb
+  to   = module.load_balancer.aws_lb.web_alb
+}
+moved {
+  from = aws_lb_target_group.web_tg
+  to   = module.load_balancer.aws_lb_target_group.web_tg
+}
+moved {
+  from = aws_lb_listener.web_listener
+  to   = module.load_balancer.aws_lb_listener.web_listener
+}
+```
+
+**Plan gate**:
+```bash
+terraform plan
+# Expected: LB resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+**Teaching points**:
+- Module consumes outputs from both `networking` and `security_groups` — shows the dependency graph.
+- The `subnets` line is the one place where module code differs from the flat original (list is pre-computed by the networking module's output).
+- The LB module owns the ALB DNS output; root re-exposes it. This is clean module contract design.
+
+**Task conclusion**:
+Students learn module contract design and output ownership boundaries. The LB module owns `alb_dns_name` and downstream consumers reference it through the root output.
+
+---
+
+### Task 6: Build the Autoscaling Group Module, Remove Dead Inputs (+ Moved Blocks)
+
+The final module migration covers the autoscaling group and introduces an important refactoring discipline: removing obsolete variables. Two root variables (`public_subnet_a_name` and `public_subnet_a_cidr`) were carried forward from earlier labs but no module consumes them. Cleaning them up here teaches students that refactoring includes tech-debt removal, not just file reorganization.
+
+**What students do**:
+1. Create `modules/autoscaling-group/main.tf` — move the 2 ASG resources verbatim from flat `autoscaling-group.tf`.
+2. Create `modules/autoscaling-group/variables.tf` — needs: `account`, `region`, `image_id`, `instance_type`, `instance_count_min`, `instance_count_max`, `app_sg_id`, `private_subnet_ids`, `target_group_arn`, `user_data_base64`.
+3. Create `modules/autoscaling-group/output.tf` — (empty/none needed, unless you want to output the ASG name).
+4. Add the `module "autoscaling_group"` block to root `main.tf`.
+5. Finalize root `output.tf` to add `load_balancer_dns`.
+6. **Remove obsolete root variables** that no module consumes:
+   - `public_subnet_a_name` from `variables.tf`
+   - `public_subnet_a_cidr` from `variables.tf`
+   - The matching entries from `terraform.tfvars`
+7. **Add ASG moved blocks to `moved.tf` immediately** (2 entries — see [Section 7](#7-complete-moved-blocks-reference)).
+8. Run `terraform plan`.
+
+**Module interface**:
+```hcl
+# modules/autoscaling-group/variables.tf
+variable "account" {
+  type = string
+}
+
+variable "image_id" {
+  type = string
+  description = "AMI ID for the region (already resolved by root)"
+}
+
+variable "instance_type" {
+  type    = string
+  default = "t3.micro"
+}
+
+variable "instance_count_min" {
+  type    = number
+  default = 1
+  validation {
+    condition     = var.instance_count_min > 0 && var.instance_count_min <= 3
+    error_message = "Instance count min must be between 1 and 3."
+  }
+}
+
+variable "instance_count_max" {
+  type    = number
+  default = 2
+  validation {
+    condition     = var.instance_count_max >= 3 && var.instance_count_max <= 4
+    error_message = "Instance count max must be between 3 and 4."
+  }
+}
+
+variable "user_data_base64" {
+  type        = string
+  description = "Base64-encoded user data script"
+}
+
+variable "app_sg_id" {
+  type        = string
+  description = "Security group ID for instances"
+}
+
+variable "private_subnet_ids" {
+  type        = list(string)
+  description = "Private subnet IDs for ASG placement"
+}
+
+variable "target_group_arn" {
+  type        = string
+  description = "ALB target group ARN"
+}
+```
+
+**Changes in module `main.tf`** vs the flat original:
+- `user_data = filebase64(...)` → `user_data = var.user_data_base64` (root passes it in)
+- `security_groups = [aws_security_group.allow-http-ssh.id]` → `security_groups = [var.app_sg_id]`
+- `vpc_zone_identifier = aws_subnet.private_subnets[*].id` → `vpc_zone_identifier = var.private_subnet_ids`
+- `target_group_arns = [aws_lb_target_group.web_tg.arn]` → `target_group_arns = [var.target_group_arn]`
+- `image_id = var.image_id[var.region]` → `image_id = var.image_id` (root resolves the map lookup)
+
+**Root main.tf addition**:
+```hcl
+module "autoscaling_group" {
+  source = "./modules/autoscaling-group"
+
+  account            = var.account
+  image_id           = var.image_id[var.region]
+  instance_type      = var.instance_type
+  instance_count_min = var.instance_count_min
+  instance_count_max = var.instance_count_max
+  user_data_base64   = filebase64("${path.module}/install_space_invaders.sh")
+  app_sg_id          = module.security_groups.app_sg_id
+  private_subnet_ids = module.networking.private_subnet_ids
+  target_group_arn   = module.load_balancer.target_group_arn
+}
+```
+
+**Root output.tf finalization**:
+```hcl
+output "load_balancer_dns" {
+  value = module.load_balancer.alb_dns_name
+}
+```
+
+**Dead variable removal** (root `variables.tf`):
+```hcl
+# DELETE these — they are vestigial from Lab 02, no module consumes them
+variable "public_subnet_a_name" { ... }   # REMOVE
+variable "public_subnet_a_cidr" { ... }   # REMOVE
+```
+Also remove the matching entries from `terraform.tfvars`:
+```hcl
+# DELETE these lines from terraform.tfvars
+public_subnet_a_name = "..."   # REMOVE
+public_subnet_a_cidr = "..."   # REMOVE
+```
+
+**Moved blocks added this task** (in `moved.tf`):
+```hcl
+# --- Autoscaling Group (2) ---
+moved {
+  from = aws_launch_template.web_template
+  to   = module.autoscaling_group.aws_launch_template.web_template
+}
+moved {
+  from = aws_autoscaling_group.web_asg
+  to   = module.autoscaling_group.aws_autoscaling_group.web_asg
+}
+```
+
+**Plan gate**:
+```bash
+terraform plan
+# Expected: ASG resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+# Expected: No warnings about undeclared variables
+```
+
+**Teaching points**:
+- Most complex module call — receives inputs from 3 other modules.
+- `image_id` map lookup happens at root (module gets a simple string). This is a design choice: root knows the region, module doesn't need to.
+- `user_data_base64` comes from root's `filebase64()` call — keeps the module generic.
+- `path.module` in root points to the root directory where the script lives.
+- Removing dead variables is part of refactoring — don't carry tech debt forward.
+
+**Task conclusion**:
+Students complete Phase 1 modularization and see that refactoring includes cleaning up obsolete inputs, not only moving files around.
+
+---
+
+### Task 7: Apply and Verify
+
+Modularization is complete. Before cleaning up migration metadata, students apply the refactored configuration and prove the application still works. This is the moment the refactor pays off: zero resources recreated, zero downtime, same running application.
+
+**What students do**:
+1. `terraform apply` — approve the plan (should be moves only).
+2. Open the ALB DNS name in a browser — Space Invaders should load.
+3. `terraform plan` — should show `No changes. Your infrastructure matches the configuration.`
+
+**Validation**:
+```bash
+# Confirm app works
+curl -s -o /dev/null -w "%{http_code}" http://<ALB_DNS_NAME>/
+# Expected: 200
+
+# Confirm clean state
+terraform plan
+# Expected: "No changes"
+```
+
+**Teaching points**:
+- The entire refactor happened without a single resource being recreated.
+- The app was available the entire time.
+- This is the power of `moved` blocks + modules.
+
+**Task conclusion**:
+Students confirm that structural refactoring changed only the code organization, not the runtime behavior. The website was live throughout.
+
+---
+
+### Task 8: Mandatory Moved Block Cleanup (Phase 1 Closure)
+
+With the apply confirmed and the plan clean, the `moved` blocks have served their purpose. This task removes them. Leaving stale `moved` blocks in the codebase creates confusion in future refactors and falsely signals that migration is still in progress. This cleanup is mandatory, not optional.
+
+**What students do**:
 1. Rename `moved.tf` to `moved.tf.bak`.
 2. Run `terraform plan`.
-3. If still clean, delete `moved.tf.bak`.
+3. If clean, delete `moved.tf.bak`.
+4. If not clean, restore and fix missing mappings before retry.
 
-Validation:
-- `terraform plan` remains clean with no moved file.
+**Validation**:
+```bash
+terraform plan
+# Expected: "No changes" — even without moved.tf
+```
 
-Task Summary:
-Students understand `moved` blocks are migration metadata, not permanent infrastructure logic.
+**Teaching points**:
+- `moved` blocks are only needed for the migration. Once the state file reflects the new addresses, they're inert.
+- This cleanup is **mandatory**, not optional. Leaving stale `moved` blocks adds clutter and can cause confusion in future refactors.
+- Students should understand the lifecycle: add → apply → verify → remove.
 
-## Task 10 - Phase 2 Optimization: Split Networking and Add Moves During Refactor
+**Task conclusion**:
+Students learn lifecycle ownership of migration metadata and internalize the discipline of removing scaffolding once it has served its purpose.
 
-Students optimize module design for reuse and add moved mappings as part of the task (not deferred).
+---
 
-Steps:
-1. Split networking into:
-   - `modules/vpc`
-   - `modules/subnets` (called for public and private)
-2. Standardize subnet generation to reusable patterns.
-3. Add moved blocks in this task for all address changes introduced here.
+## 5. Phase 2 — Optimize to Show Module Power
+
+**Goal**: Demonstrate reusability and DRY patterns. This phase **does** change the module structure, requiring new moved blocks for the internal reorganization. As with Phase 1, moved blocks are added in-task, not deferred.
+
+---
+
+### Task 9: Split Networking into VPC + Generic Subnets Module (+ Moved Blocks)
+
+Phase 2 shifts focus from "migration only" to "design for reuse". Students split the monolithic networking module into smaller, composable pieces: a standalone VPC module and a generic subnets module that is called twice (once for public, once for private). This also requires converting private subnets from `count` to `for_each` — a real-world migration pattern.
+
+**What students do**:
+1. Create `modules/vpc/` — contains just:
+   - `aws_vpc.custom-vpc`
+   - `aws_internet_gateway.igw`
+   - `aws_nat_gateway.ngw`
+   - Variables: `vpc_cidr`, `vpc_name`
+   - Outputs: `vpc_id`, `igw_id`, `ngw_id`
+
+2. Create `modules/subnets/` — a **generic** module called twice:
+   - Uses `for_each` with a map of `{ az_name => cidr }`
+   - Creates subnets + a route table + route table associations
+   - Variables: `vpc_id`, `subnets` (map), `route_target` (object with `type` = "igw"|"nat" and `id`), `name_prefix`
+   - Outputs: `subnet_ids` (list), `route_table_id`
+
+3. Convert **private subnets from `count` to `for_each`** — build a map similar to the public subnets pattern:
+   ```hcl
+   locals {
+     private_subnets = {
+       for i, az in data.aws_availability_zones.available.names :
+       az => cidrsubnet(var.vpc_cidr, 4, i + 10)
+     }
+   }
+   ```
+   This requires moved blocks to switch from `aws_subnet.private_subnets[0]` to `module.private_subnets.aws_subnet.subnets["us-east-2a"]`, etc.
+
+4. Update root `main.tf`:
+   ```hcl
+   module "vpc" {
+     source   = "./modules/vpc"
+     vpc_cidr = var.vpc_cidr
+     vpc_name = var.vpc_name
+   }
+
+   module "public_subnets" {
+     source      = "./modules/subnets"
+     vpc_id      = module.vpc.vpc_id
+     subnets     = local.public_subnets
+     route_target = { type = "igw", id = module.vpc.igw_id }
+     name_prefix = "${var.vpc_name}-public"
+     map_public_ip = true
+   }
+
+   module "private_subnets" {
+     source      = "./modules/subnets"
+     vpc_id      = module.vpc.vpc_id
+     subnets     = local.private_subnets
+     route_target = { type = "nat", id = module.vpc.ngw_id }
+     name_prefix = "${var.vpc_name}-private"
+     map_public_ip = false
+   }
+   ```
+
+5. **Add moved blocks for the restructuring immediately** (in `moved.tf`):
+   - `module.networking.aws_vpc.custom-vpc` → `module.vpc.aws_vpc.custom-vpc`
+   - `module.networking.aws_subnet.public_subnets` → `module.public_subnets.aws_subnet.subnets`
+   - `module.networking.aws_subnet.private_subnets[0]` → `module.private_subnets.aws_subnet.subnets["us-east-2a"]` (one per AZ)
+   - etc.
+
+6. Run `terraform plan`.
+
+**Plan gate**:
+```bash
+terraform plan
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+**Teaching points**:
+- One module, two calls — this is the power of reusable modules.
+- `for_each` everywhere gives stable, readable state addresses.
+- The `count → for_each` migration is a real-world pattern students should know.
+
+**Task conclusion**:
+Students see how to optimize module granularity for reuse without breaking live infrastructure. The same `subnets` module serves both public and private use cases.
+
+---
+
+### Task 10: Make Security Groups Generic (+ Moved Blocks)
+
+The final Phase 2 optimization applies the same "one module, multiple calls" pattern to security groups. Students replace the Phase 1 combined `security-groups` module with a generic `security-group` (singular) module that creates one SG with configurable rules, then call it twice. This is the most complex move of the lab because the rule resources change from named addresses to `for_each`-keyed addresses.
+
+**What students do**:
+1. Create `modules/security-group/` (singular) — a generic module that creates **one** SG with configurable rules:
+   ```hcl
+   variable "name"        { type = string }
+   variable "description" { type = string }
+   variable "vpc_id"      { type = string }
+
+   variable "ingress_rules" {
+     type = map(object({
+       from_port                    = number
+       to_port                      = number
+       ip_protocol                  = string
+       cidr_ipv4                    = optional(string)
+       referenced_security_group_id = optional(string)
+     }))
+   }
+
+   variable "egress_rules" {
+     type = map(object({
+       ip_protocol = string
+       cidr_ipv4   = optional(string)
+     }))
+   }
+   ```
+   Uses `for_each` over the rule maps to create `aws_vpc_security_group_ingress_rule` and `aws_vpc_security_group_egress_rule` resources.
+
+2. Call it twice from root:
+   ```hcl
+   module "alb_security_group" {
+     source      = "./modules/security-group"
+     name        = "${var.account}-alb-sg"
+     description = "Allow HTTP from internet to ALB"
+     vpc_id      = module.vpc.vpc_id
+     ingress_rules = {
+       alb_http_in = { from_port = 80, to_port = 80, ip_protocol = "tcp", cidr_ipv4 = "0.0.0.0/0" }
+     }
+     egress_rules = {
+       alb_all_out = { ip_protocol = "-1", cidr_ipv4 = "0.0.0.0/0" }
+     }
+   }
+
+   module "app_security_group" {
+     source      = "./modules/security-group"
+     name        = var.security_group_name
+     description = "Enable HTTP and SSH Access"
+     vpc_id      = module.vpc.vpc_id
+     ingress_rules = {
+       allow-http-ipv4 = { from_port = 80, to_port = 80, ip_protocol = "tcp", referenced_security_group_id = module.alb_security_group.sg_id }
+       allow-ssh-ipv4  = { from_port = 22, to_port = 22, ip_protocol = "tcp", cidr_ipv4 = "0.0.0.0/0" }
+     }
+     egress_rules = {
+       allow-all-outbound = { ip_protocol = "-1", cidr_ipv4 = "0.0.0.0/0" }
+     }
+   }
+   ```
+
+3. **Add moved blocks** from the Phase 1 combined module to the two individual module calls immediately.
+
 4. Run `terraform plan`.
 
-Validation:
-- `terraform plan` remains non-destructive.
+**Note**: The rule resources change from named (`allow-http-ipv4`) to `for_each`-keyed (`ingress["allow-http-ipv4"]`). This means the state addresses change. Students will need per-rule moved blocks. Using the original rule names as map keys (e.g., `alb_http_in`, `allow-http-ipv4`) keeps the moved blocks straightforward.
 
-Task Summary:
-Students move from modularization to reusable module architecture while preserving live infrastructure.
+**Plan gate**:
+```bash
+terraform plan
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
 
-## Task 11 - Phase 2 Optimization: SG Refactor and Registry Module Demonstration
+**Teaching points**:
+- One generic module eliminates repeated boilerplate.
+- `for_each` over rule maps gives stable, named state addresses.
+- Order of module calls matters: ALB SG must be created before app SG (which references it).
+- Using map keys that match the original resource names simplifies moved blocks.
 
-Students complete Phase 2 with final SG refactor and incorporate Terraform Registry module usage as discussed in lecture.
+**Task conclusion**:
+Students finish Phase 2 with the most advanced pattern: generic, reusable modules with complex variable types and `for_each` iteration. The entire infrastructure has been modernized without a single resource being recreated.
 
-Steps:
-1. Refactor SG approach as designed for Phase 2.
-2. Add any remaining moved blocks introduced by this refactor in the same task.
-3. Run `terraform plan` and ensure no unintended recreate.
-4. Registry demonstration:
-   - Add an instructor-led example that consumes a Terraform Registry module (for example, `terraform-aws-modules/security-group/aws`) in a controlled variant/sandbox path.
-   - Compare interface, outputs, and tradeoffs vs local custom module.
+---
 
-Validation:
-- Main Phase 2 path stays clean.
-- Registry example is understood and reproducible for discussion.
+## 6. Phase 3 — Optional Challenge: Replace Local SG Module with Terraform Registry Module
 
-Task Summary:
-Students finish with both advanced refactor mechanics and practical understanding of when to build local modules vs consume registry modules.
+**Goal**: For advanced students who want additional practice. This optional phase replaces the custom `security-group` module built in Phase 2 with the community-maintained `terraform-aws-modules/security-group/aws` from the Terraform Registry. This teaches build-vs-buy decision making, version constraints, and how to work with third-party module interfaces.
 
-## Notes for Instructor Validation Workflow
-- Preferred check after each task: `terraform plan`.
-- Add `moved` blocks in the same task as the refactor.
-- Do not defer all moved blocks to the end.
-- Keep ALB DNS output owned by the load balancer module and exposed via root output.
+> **Note**: This phase is entirely optional. Students who complete Phases 1 and 2 have already achieved the core learning objectives. Phase 3 is a challenge extension.
 
-## Current Repository Alignment
-- `phase1-modularized` and `phase2-optimized` now remove deprecated root inputs:
-  - `public_subnet_a_name`
-  - `public_subnet_a_cidr`
-- Temp-run script auto-cleans test resources and avoids `user01` naming collisions by generating unique run tags.
+### Why a Separate Phase?
+
+Mixing registry module exploration into the same task as the SG refactor would overload students with two unrelated concepts at once (generic module design *and* registry consumption). Separating them lets each phase stand on its own learning objective:
+- Phase 2: Design reusable modules.
+- Phase 3: Evaluate and consume community modules.
+
+### What Changes from Phase 2?
+
+Only the security-group approach changes. Everything else (VPC, subnets, S3, LB, ASG) remains identical to Phase 2. The `phase3-registry/` directory in the repository contains **only the files that differ from Phase 2**.
+
+### Task 11 (Challenge): Replace Custom SG Module with Registry Module
+
+Students remove the local `modules/security-group/` module and replace both SG calls with the `terraform-aws-modules/security-group/aws` registry module. This is a fundamentally different refactor because the registry module has its own resource naming, which means new `moved` blocks mapping Phase 2 addresses to the registry module's internal addresses.
+
+**What students do**:
+1. Add a version-constrained source for the registry module:
+   ```hcl
+   module "alb_security_group" {
+     source  = "terraform-aws-modules/security-group/aws"
+     version = "~> 5.0"
+
+     name        = "${var.account}-alb-sg"
+     description = "Allow HTTP from internet to ALB"
+     vpc_id      = module.vpc.vpc_id
+
+     ingress_with_cidr_blocks = [
+       {
+         from_port   = 80
+         to_port     = 80
+         protocol    = "tcp"
+         cidr_blocks = "0.0.0.0/0"
+       }
+     ]
+     egress_with_cidr_blocks = [
+       {
+         from_port   = 0
+         to_port     = 0
+         protocol    = "-1"
+         cidr_blocks = "0.0.0.0/0"
+       }
+     ]
+   }
+   ```
+
+2. Replace the `app_security_group` module call similarly, using `ingress_with_source_security_group_id` for the ALB→app rule.
+
+3. **Add moved blocks** mapping Phase 2 custom module addresses to registry module internal addresses.
+
+4. Delete the local `modules/security-group/` directory (no longer needed).
+
+5. Run `terraform init` (to download registry module) then `terraform plan`.
+
+**Plan gate**:
+```bash
+terraform init
+terraform plan
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+**Important considerations**:
+- Registry module internal resource names differ from your custom module. Students must inspect the registry module source to determine the correct `moved` block targets.
+- Version constraints (`~> 5.0`) pin to a major version while allowing patches — a production best practice.
+- The registry module creates its own SG and rules internally; the `moved` blocks must map from `module.alb_security_group.aws_security_group.this` (Phase 2 custom) to the registry module's internal SG resource address.
+
+**Discussion points** (compare local vs registry):
+- Input surface area: registry modules often have dozens of variables; local modules have exactly what you need.
+- Output ergonomics: registry modules export many outputs; local modules export only what downstream consumers need.
+- Customization limits: registry modules may not support every edge case.
+- Upgrade/version management: registry modules can be pinned and upgraded independently.
+- When to break modules into their own repos vs monorepo.
+- Terraform Registry (public and private).
+
+**Task conclusion**:
+Students gain practical experience consuming community modules and learn to evaluate the trade-offs between building custom modules (full control, minimal interface) and consuming registry modules (less code to maintain, broader feature set, version management overhead).
+
+---
+
+## 7. Complete Moved Blocks Reference
+
+### Phase 1: Flat → Module (26 blocks)
+
+```hcl
+# ======================
+# moved.tf
+# ======================
+
+# --- S3 Bucket (5) ---
+moved {
+  from = aws_s3_bucket.bucket
+  to   = module.s3_bucket.aws_s3_bucket.bucket
+}
+moved {
+  from = aws_s3_bucket_ownership_controls.this
+  to   = module.s3_bucket.aws_s3_bucket_ownership_controls.this
+}
+moved {
+  from = aws_s3_bucket_public_access_block.this
+  to   = module.s3_bucket.aws_s3_bucket_public_access_block.this
+}
+moved {
+  from = aws_s3_bucket_versioning.versioning
+  to   = module.s3_bucket.aws_s3_bucket_versioning.versioning
+}
+moved {
+  from = aws_s3_bucket_server_side_encryption_configuration.encryption
+  to   = module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.encryption
+}
+
+# --- Networking (9) ---
+moved {
+  from = aws_vpc.custom-vpc
+  to   = module.networking.aws_vpc.custom-vpc
+}
+moved {
+  from = aws_subnet.public_subnets
+  to   = module.networking.aws_subnet.public_subnets
+}
+moved {
+  from = aws_internet_gateway.igw
+  to   = module.networking.aws_internet_gateway.igw
+}
+moved {
+  from = aws_nat_gateway.ngw
+  to   = module.networking.aws_nat_gateway.ngw
+}
+moved {
+  from = aws_route_table.public_rt
+  to   = module.networking.aws_route_table.public_rt
+}
+moved {
+  from = aws_route_table_association.public_assoc
+  to   = module.networking.aws_route_table_association.public_assoc
+}
+moved {
+  from = aws_subnet.private_subnets
+  to   = module.networking.aws_subnet.private_subnets
+}
+moved {
+  from = aws_route_table.private_rt
+  to   = module.networking.aws_route_table.private_rt
+}
+moved {
+  from = aws_route_table_association.private_assoc
+  to   = module.networking.aws_route_table_association.private_assoc
+}
+
+# --- Security Groups (7) ---
+moved {
+  from = aws_security_group.allow-http-ssh
+  to   = module.security_groups.aws_security_group.allow-http-ssh
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.allow-http-ipv4
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
+}
+moved {
+  from = aws_vpc_security_group_egress_rule.allow-all-outbound
+  to   = module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound
+}
+moved {
+  from = aws_security_group.alb_sg
+  to   = module.security_groups.aws_security_group.alb_sg
+}
+moved {
+  from = aws_vpc_security_group_ingress_rule.alb_http_in
+  to   = module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in
+}
+moved {
+  from = aws_vpc_security_group_egress_rule.alb_all_out
+  to   = module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out
+}
+
+# --- Load Balancer (3) ---
+moved {
+  from = aws_lb.web_alb
+  to   = module.load_balancer.aws_lb.web_alb
+}
+moved {
+  from = aws_lb_target_group.web_tg
+  to   = module.load_balancer.aws_lb_target_group.web_tg
+}
+moved {
+  from = aws_lb_listener.web_listener
+  to   = module.load_balancer.aws_lb_listener.web_listener
+}
+
+# --- Autoscaling Group (2) ---
+moved {
+  from = aws_launch_template.web_template
+  to   = module.autoscaling_group.aws_launch_template.web_template
+}
+moved {
+  from = aws_autoscaling_group.web_asg
+  to   = module.autoscaling_group.aws_autoscaling_group.web_asg
+}
+```
+
+---
+
+## 8. Variable & Output Contract Reference
+
+### Root Variables (after Task 6 cleanup)
+
+| Variable | Type | Consumed By |
+|---|---|---|
+| `region` | `string` | `provider`, `autoscaling_group` (AMI lookup) |
+| `vpc_name` | `string` | `networking` |
+| `vpc_cidr` | `string` | `networking` |
+| `route_table_name` | `string` | `networking` |
+| `security_group_name` | `string` | `security_groups` |
+| `account` | `string` | `security_groups`, `load_balancer`, `autoscaling_group` |
+| `image_id` | `map(string)` | `autoscaling_group` (resolved at root: `var.image_id[var.region]`) |
+| `instance_type` | `string` | `autoscaling_group` |
+| `instance_count_min` | `number` | `autoscaling_group` |
+| `instance_count_max` | `number` | `autoscaling_group` |
+
+**Removed in Task 6** (obsolete — no module consumed them):
+| Variable | Reason |
+|---|---|
+| `public_subnet_a_name` | Vestigial from Lab 02 single-subnet design; superseded by dynamic subnets in Lab 04 |
+| `public_subnet_a_cidr` | Same as above |
+
+### Cross-Module Data Flow
+
+```
+                         ┌──────────────┐
+                    ┌───►│  s3_bucket   │──► bucket_name (output)
+                    │    └──────────────┘
+                    │
+                    │    ┌──────────────┐
+                    ├───►│  networking  │──► vpc_id
+                    │    │              │──► public_subnet_ids
+                    │    │              │──► private_subnet_ids
+                    │    └──────┬───────┘
+                    │           │
+  root variables ───┤           ▼
+                    │    ┌──────────────────┐
+                    ├───►│ security_groups  │──► app_sg_id
+                    │    │  (needs vpc_id)  │──► alb_sg_id
+                    │    └──────┬───────────┘
+                    │           │
+                    │           ▼
+                    │    ┌──────────────────┐
+                    ├───►│  load_balancer   │──► alb_dns_name (root re-exposes as load_balancer_dns)
+                    │    │  (needs vpc_id,  │──► target_group_arn
+                    │    │   alb_sg_id,     │
+                    │    │   public_subnets)│
+                    │    └──────┬───────────┘
+                    │           │
+                    │           ▼
+                    │    ┌──────────────────┐
+                    └───►│autoscaling_group │
+                         │  (needs app_sg,  │
+                         │   private_subs,  │
+                         │   target_grp_arn)│
+                         └──────────────────┘
+```
+
+---
+
+## 9. Validation Checklist
+
+Use after each task to confirm correctness.
+
+### Per-Task Validation (every task)
+```bash
+terraform plan
+# Expected: moved resources show "has moved to" annotations
+# Expected: 0 to add, 0 to change, 0 to destroy
+```
+
+### State Migration Audit (Task 6)
+```bash
+terraform plan
+# Expected output must contain ALL of:
+#   - "0 to add"
+#   - "0 to change"
+#   - "0 to destroy"
+#   - Multiple "has moved to" lines covering all 26 resources
+```
+
+### Functional Validation (Task 7)
+```bash
+# Apply
+terraform apply
+
+# Test ALB (replace with actual DNS)
+curl -s -o /dev/null -w "%{http_code}" http://$(terraform output -raw load_balancer_dns)/
+# Expected: 200
+
+# Confirm idempotent
+terraform plan
+# Expected: "No changes. Your infrastructure matches the configuration."
+```
+
+### Post-Cleanup Validation (Task 8)
+```bash
+# After removing moved.tf
+terraform plan
+# Expected: "No changes" — moved blocks are inert after convergence
+```
+
+### Automated Validation Script
+The `validate_progressive.ps1` script in the `aws/` folder can be extended to validate the modules structure. To validate the modules root independently:
+```powershell
+cd aws/website-with-modules
+terraform init -backend=false
+terraform validate
+```
+
+The `run_phase_deploy_local.ps1` script performs full deploy testing with local backend, auto-cleanup, and unique naming. It never uses `user01`.
+
+---
+
+## Common Failure Patterns to Watch
+
+1. **Deferring moved blocks until the end** — catches errors too late, harder to isolate which task went wrong.
+2. **Switching backend behavior mid-lab** — breaks continuity, may lose state.
+3. **Renaming tags or names accidentally during module extraction** — causes drift (tag changes = plan changes).
+4. **Removing variables before references are fully rewired** — terraform validate catches this, but plan is better.
+5. **Leaving moved blocks in place after convergence** — creates confusion in future refactors.
+6. **Carrying obsolete variables forward** — tech debt accumulates; remove dead inputs during refactor.
+
+---
+
+## Appendix: Key Terraform Concepts Covered
+
+| Concept | Where Introduced |
+|---|---|
+| Module basics (source, variables, outputs) | Phase 1, Tasks 2–6 |
+| Cross-module references | Phase 1, Tasks 4–6 |
+| `moved` blocks for safe refactoring | Phase 1, Tasks 2–6 (in-task, not deferred) |
+| `path.module` vs `path.root` | Phase 1, Task 6 |
+| Obsolete variable cleanup | Phase 1, Task 6 |
+| Module output ownership (ALB DNS) | Phase 1, Task 5 |
+| Mandatory moved cleanup | Phase 1, Task 8 |
+| Module reusability (same module, multiple calls) | Phase 2, Tasks 9–10 |
+| `for_each` vs `count` trade-offs | Phase 2, Task 9 |
+| `count` → `for_each` migration | Phase 2, Task 9 |
+| Dynamic/generic modules with complex variable types | Phase 2, Task 10 |
+| Terraform Registry modules — build vs buy | Phase 3, Task 11 |
+| Version constraints in module `source` blocks | Phase 3, Task 11 |
+
+---
+
+## Repository Alignment Notes
+
+The current repository implementation aligns with this plan:
+
+1. **Delta directory pattern**: Each phase directory contains only files that changed from the previous phase, not a full copy. `phase1-modularized` is the complete Phase 1 end state. `phase2-optimized` contains only the root files and modules that differ from Phase 1. `phase3-registry` contains only the files that differ from Phase 2.
+2. `phase1-modularized` and `phase2-optimized` removed obsolete root inputs:
+   - `public_subnet_a_name`
+   - `public_subnet_a_cidr`
+3. Temp validation runner (`run_phase_deploy_local.ps1`) performs pre-run and post-run cleanup.
+4. Runner uses unique naming to avoid collisions and does not rely on `user01`.
