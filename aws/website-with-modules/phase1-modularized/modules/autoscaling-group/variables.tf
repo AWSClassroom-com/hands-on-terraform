@@ -19,7 +19,9 @@ variable "instance_count_max" {
 }
 
 variable "user_data_base64" {
-  type = string
+  type        = string
+  default     = ""
+  description = "User data (Startup script), Base64 encoded; default of empty string makes it optional"
 }
 
 variable "app_sg_id" {

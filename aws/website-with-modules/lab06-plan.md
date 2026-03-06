@@ -609,7 +609,7 @@ The final module extraction is also the most complex module call — it wires in
    | 2 | `aws_autoscaling_group.web_asg` | `autoscaling-group.tf` |
 
    > **Important changes** in module `main.tf` vs flat original:
-   > - `user_data = filebase64(...)` → `user_data = var.user_data_base64` (root passes it in)
+   > - `user_data = filebase64(...)` → `user_data = var.user_data_base64 != "" ? var.user_data_base64 : null` (root passes it in; `null` omits the attribute entirely)
    > - `security_groups = [aws_security_group.allow-http-ssh.id]` → `security_groups = [var.app_sg_id]`
    > - `vpc_zone_identifier = aws_subnet.private_subnets[*].id` → `vpc_zone_identifier = var.private_subnet_ids`
    > - `target_group_arns = [aws_lb_target_group.web_tg.arn]` → `target_group_arns = [var.target_group_arn]`
@@ -618,19 +618,17 @@ The final module extraction is also the most complex module call — it wires in
 2. **Create `modules/autoscaling-group/variables.tf`**:
    | Variable | Type | Description |
    |---|---|---|
-   | `account` | `string` | Account/user name prefix |
-   | `image_id` | `string` | AMI ID (already resolved by root) |
-   | `instance_type` | `string` | EC2 instance type (default `t3.micro`) |
-   | `instance_count_min` | `number` | Minimum ASG size (default 1) |
-   | `instance_count_max` | `number` | Maximum ASG size (default 2) |
-   | `user_data_base64` | `string` | Base64-encoded user data script |
-   | `app_sg_id` | `string` | Security group ID for instances |
-   | `private_subnet_ids` | `list(string)` | Private subnet IDs for ASG placement |
-   | `target_group_arn` | `string` | ALB target group ARN |
+   | `account` | `string` | Account/user name prefix from root variables.tf|
+   | `image_id` | `string` | AMI ID (already resolved by root) from root variables.tf, but string vs. map|
+   | `instance_type` | `string` | EC2 instance type (default `t3.micro`) from root variables.tf|
+   | `instance_count_min` | `number` | Minimum ASG size (default 1) from root variables.tf|
+   | `instance_count_max` | `number` | Maximum ASG size (default 2) from root variables.tf|
+   | `user_data_base64` | `string` (default `""`) | Base64-encoded user data script; omitted when blank (new variable - root passes this in)|
+   | `app_sg_id` | `string` | Security group ID for instances (from security group module)|
+   | `private_subnet_ids` | `list(string)` | Private subnet IDs for ASG placement (from network module) |
+   | `target_group_arn` | `string` | ALB target group ARN (From LB module)|
 
-3. **Create `modules/autoscaling-group/output.tf`** — none needed (no downstream consumers).
-
-4. **Add module call** to root `main.tf`:
+3. **Add module call** to root `main.tf`:
    ```hcl
    module "autoscaling_group" {
      source = "./modules/autoscaling-group"
@@ -647,21 +645,21 @@ The final module extraction is also the most complex module call — it wires in
    }
    ```
 
-5. **Delete flat file**: `autoscaling-group.tf` (last flat resource file — no remaining files to rewire).
+4. **Delete flat file**: `autoscaling-group.tf` (last flat resource file — no remaining files to rewire).
 
-6. **Remove dead root variables** (no module consumes these):
+5. **Remove dead root variables** (no module consumes these):
    | Variable | File | Action |
    |---|---|---|
    | `public_subnet_a_name` | `variables.tf` + `terraform.tfvars` | Delete both |
    | `public_subnet_a_cidr` | `variables.tf` + `terraform.tfvars` | Delete both |
 
-7. **Add moved blocks** to `moved.tf` (2 entries):
+6. **Add moved blocks** to `moved.tf` (2 entries):
    | From | To |
    |---|---|
    | `aws_launch_template.web_template` | `module.autoscaling_group.aws_launch_template.web_template` |
    | `aws_autoscaling_group.web_asg` | `module.autoscaling_group.aws_autoscaling_group.web_asg` |
 
-8. **Run `terraform plan`**.
+7. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash

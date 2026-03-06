@@ -3,7 +3,7 @@ resource "aws_launch_template" "web_template" {
   image_id      = var.image_id
   instance_type = var.instance_type
 
-  user_data = var.user_data_base64
+  user_data = var.user_data_base64 != "" ? var.user_data_base64 : null
 
   network_interfaces {
     associate_public_ip_address = false
