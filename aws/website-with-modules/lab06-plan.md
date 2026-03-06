@@ -141,6 +141,9 @@ The flat config's `custom-vpc.tf` has moved blocks from the `subnet-a → public
 ### Remove obsolete root variables
 `public_subnet_a_name` and `public_subnet_a_cidr` are vestigial from Lab 02 (single subnet). They were superseded by the dynamic subnets in Lab 04 and are not consumed by any module. They should be **removed** from root `variables.tf` and `terraform.tfvars` as part of Task 6. This teaches students that refactoring includes tech-debt cleanup, not just file movement.
 
+### Consumer rewiring during incremental extraction
+When resources are extracted into a module one group at a time (Tasks 2–6), the flat files being deleted may contain resources referenced by other flat files that still remain. For example, after Task 3 moves networking into a module and deletes `custom-vpc.tf`, the remaining `sec-groups.tf` still references `aws_vpc.custom-vpc.id` — which no longer exists as a flat resource. Each extraction task must therefore: (a) delete the flat files whose resources moved to the module, and (b) update remaining flat files to reference the corresponding module output instead (`aws_vpc.custom-vpc.id` → `module.networking.vpc_id`). This is safe because the module output resolves to the same underlying value, so `terraform plan` stays clean. The same pattern applies in Phase 2 when replacing one module with another — downstream module calls must be updated to reference the new module's outputs.
+
 ---
 
 ## 3. Directory Structure
@@ -272,68 +275,53 @@ Students begin from a known-good baseline and understand that refactoring should
 
 ### Task 2: Build the S3 Bucket Module (+ Moved Blocks)
 
-The S3 bucket is the simplest resource group to modularize — five resources with no cross-dependencies on other modules. Starting here lets students learn the full module-creation workflow (create directory, move resources, wire variables/outputs, add moved blocks, verify with plan) on the easiest target before tackling more complex resource groups.
+The S3 bucket is the simplest resource group to modularize — five resources with no cross-dependencies on other modules. Starting here lets students learn the full module-creation workflow (create directory, move resources, wire variables/outputs, add moved blocks, verify with plan) on the easiest target before tackling more complex resource groups. It also introduces output ownership: the bucket name originates inside the module, so the module owns that output and root re-exposes it.
 
 **What students do**:
-1. Create `modules/s3-bucket/main.tf` — move the 5 S3 resources verbatim from the flat `bucket.tf`. No changes to resource names or configuration.
-2. Create `modules/s3-bucket/variables.tf` — this module needs **no variables** (the bucket_prefix and all config are hardcoded, just as they were in the flat config).
-   - *Alternative*: If you want to parameterize `bucket_prefix` and tag values, add variables here. This is a Phase 2 concern but could be a quick win.
-3. Create `modules/s3-bucket/output.tf` — output the `bucket_name` (= `aws_s3_bucket.bucket.id`).
-4. Add the `module "s3_bucket"` block to root `main.tf`.
-5. Add the `bucket_name` output to root `output.tf` (referencing `module.s3_bucket.bucket_name`).
-6. **Add S3 moved blocks to `moved.tf` immediately** (5 entries — see [Section 7](#7-complete-moved-blocks-reference)).
-7. Run `terraform plan`.
 
-**Module interface**:
-```hcl
-# modules/s3-bucket/variables.tf
-# (none required — all values are hardcoded as in the original)
+1. **Create `modules/s3-bucket/main.tf`** — move these 5 resources verbatim from `bucket.tf`:
+   | # | Resource | Source File |
+   |---|---|---|
+   | 1 | `aws_s3_bucket.bucket` | `bucket.tf` |
+   | 2 | `aws_s3_bucket_ownership_controls.this` | `bucket.tf` |
+   | 3 | `aws_s3_bucket_public_access_block.this` | `bucket.tf` |
+   | 4 | `aws_s3_bucket_versioning.versioning` | `bucket.tf` |
+   | 5 | `aws_s3_bucket_server_side_encryption_configuration.encryption` | `bucket.tf` |
 
-# modules/s3-bucket/output.tf
-output "bucket_name" {
-  value = aws_s3_bucket.bucket.id
-}
-```
+2. **Create `modules/s3-bucket/variables.tf`** — none required (all values are hardcoded as in the original).
 
-**Root main.tf addition**:
-```hcl
-module "s3_bucket" {
-  source = "./modules/s3-bucket"
-}
-```
+3. **Create `modules/s3-bucket/output.tf`**:
+   | Output | Value |
+   |---|---|
+   | `bucket_name` | `aws_s3_bucket.bucket.id` |
 
-**Root output.tf addition**:
-```hcl
-output "bucket_name" {
-  description = "The name of the S3 bucket to use for remote state"
-  value       = module.s3_bucket.bucket_name
-}
-```
+4. **Add module call** to root `main.tf`:
+   ```hcl
+   module "s3_bucket" {
+     source = "./modules/s3-bucket"
+   }
+   ```
 
-**Moved blocks added this task** (in `moved.tf`):
-```hcl
-# --- S3 Bucket (5) ---
-moved {
-  from = aws_s3_bucket.bucket
-  to   = module.s3_bucket.aws_s3_bucket.bucket
-}
-moved {
-  from = aws_s3_bucket_ownership_controls.this
-  to   = module.s3_bucket.aws_s3_bucket_ownership_controls.this
-}
-moved {
-  from = aws_s3_bucket_public_access_block.this
-  to   = module.s3_bucket.aws_s3_bucket_public_access_block.this
-}
-moved {
-  from = aws_s3_bucket_versioning.versioning
-  to   = module.s3_bucket.aws_s3_bucket_versioning.versioning
-}
-moved {
-  from = aws_s3_bucket_server_side_encryption_configuration.encryption
-  to   = module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.encryption
-}
-```
+5. **Add root output** to `output.tf`:
+   ```hcl
+   output "bucket_name" {
+     description = "The name of the S3 bucket to use for remote state"
+     value       = module.s3_bucket.bucket_name
+   }
+   ```
+
+6. **Delete flat file**: `bucket.tf` (no remaining flat files reference S3 resources, so no rewiring needed).
+
+7. **Add moved blocks** to `moved.tf` (5 entries):
+   | From | To |
+   |---|---|
+   | `aws_s3_bucket.bucket` | `module.s3_bucket.aws_s3_bucket.bucket` |
+   | `aws_s3_bucket_ownership_controls.this` | `module.s3_bucket.aws_s3_bucket_ownership_controls.this` |
+   | `aws_s3_bucket_public_access_block.this` | `module.s3_bucket.aws_s3_bucket_public_access_block.this` |
+   | `aws_s3_bucket_versioning.versioning` | `module.s3_bucket.aws_s3_bucket_versioning.versioning` |
+   | `aws_s3_bucket_server_side_encryption_configuration.encryption` | `module.s3_bucket.aws_s3_bucket_server_side_encryption_configuration.encryption` |
+
+8. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -344,6 +332,7 @@ terraform plan
 
 **Teaching points**:
 - Simplest possible module — no inputs, one output.
+- Introduces output ownership: the module owns `bucket_name` and root re-exposes it. This pattern repeats with the load-balancer module's `alb_dns_name` in Task 5.
 - Shows how `module.X.output_name` works.
 - The S3 bucket was the first thing ever created and is still here.
 - `moved` blocks are added **now**, not deferred to a later task. This is the migration loop: refactor → map → plan → verify.
@@ -355,113 +344,76 @@ Students practice the migration loop on a small, low-risk slice and gain confide
 
 ### Task 3: Build the Networking Module (+ Moved Blocks)
 
-Networking is the largest resource group (9 resources plus a data source and locals). In Phase 1 we keep all networking — VPC, subnets, gateways, route tables — in a single module to avoid changing the iteration strategy (`count` vs `for_each`). This deliberate choice keeps Phase 1 as a pure address-only migration. Students will split this module in Phase 2.
+Networking is the largest resource group (9 resources plus a data source and locals). In Phase 1 we keep all networking — VPC, subnets, gateways, route tables — in a single module to avoid changing the iteration strategy (`count` vs `for_each`). This task also introduces consumer rewiring: once the flat networking files are deleted, the remaining flat files (`sec-groups.tf`, `load-balancer.tf`, `autoscaling-group.tf`) still reference resources like `aws_vpc.custom-vpc.id` that no longer exist at root scope. Students must update those references to use module outputs instead. This is the pattern they will repeat in every subsequent extraction task.
 
 **What students do**:
-1. Create `modules/networking/main.tf` — move these resources verbatim:
-   - `data "aws_availability_zones" "available"` (from `locals.tf`)
-   - `locals { public_subnets = ... }` (from `locals.tf`)
-   - `aws_vpc.custom-vpc` (from `custom-vpc.tf`)
-   - `aws_subnet.public_subnets` with `for_each` (from `custom-vpc.tf`)
-   - `aws_internet_gateway.igw` (from `custom-vpc.tf`)
-   - `aws_nat_gateway.ngw` (from `custom-vpc.tf`)
-   - `aws_route_table.public_rt` (from `custom-vpc.tf`)
-   - `aws_route_table_association.public_assoc` with `for_each` (from `custom-vpc.tf`)
-   - `aws_subnet.private_subnets` with `count` (from `private-network.tf`)
-   - `aws_route_table.private_rt` (from `private-network.tf`)
-   - `aws_route_table_association.private_assoc` with `count` (from `private-network.tf`)
-2. **Do NOT copy the old `moved` blocks** from `custom-vpc.tf` (the `subnet-a → public_subnets` ones). Those are already applied.
-3. Create `modules/networking/variables.tf` — needs: `vpc_cidr`, `vpc_name`, `route_table_name`.
-4. Create `modules/networking/output.tf` — needs to expose: `vpc_id`, `public_subnet_ids` (list), `private_subnet_ids` (list).
-5. Add the `module "networking"` block to root `main.tf`.
-6. **Add networking moved blocks to `moved.tf` immediately** (9 entries — see [Section 7](#7-complete-moved-blocks-reference)).
-7. Run `terraform plan`.
 
-**Module interface**:
-```hcl
-# modules/networking/variables.tf
-variable "vpc_cidr" {
-  type        = string
-  description = "CIDR block for the VPC"
-}
+1. **Create `modules/networking/main.tf`** — move these resources verbatim:
+   | # | Resource | Source File |
+   |---|---|---|
+   | 1 | `data.aws_availability_zones.available` | `locals.tf` |
+   | 2 | `locals { public_subnets = ... }` | `locals.tf` |
+   | 3 | `aws_vpc.custom-vpc` | `custom-vpc.tf` |
+   | 4 | `aws_subnet.public_subnets` (for_each) | `custom-vpc.tf` |
+   | 5 | `aws_internet_gateway.igw` | `custom-vpc.tf` |
+   | 6 | `aws_nat_gateway.ngw` | `custom-vpc.tf` |
+   | 7 | `aws_route_table.public_rt` | `custom-vpc.tf` |
+   | 8 | `aws_route_table_association.public_assoc` (for_each) | `custom-vpc.tf` |
+   | 9 | `aws_subnet.private_subnets` (count) | `private-network.tf` |
+   | 10 | `aws_route_table.private_rt` | `private-network.tf` |
+   | 11 | `aws_route_table_association.private_assoc` (count) | `private-network.tf` |
 
-variable "vpc_name" {
-  type        = string
-  description = "Name of the VPC"
-}
+   > **Do NOT copy** the old `moved` blocks from `custom-vpc.tf` (the `subnet-a → public_subnets` ones). Those are already applied.
 
-variable "route_table_name" {
-  type        = string
-  description = "Name of the public route table"
-}
+2. **Create `modules/networking/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `vpc_cidr` | `string` | CIDR block for the VPC |
+   | `vpc_name` | `string` | Name of the VPC |
+   | `route_table_name` | `string` | Name of the public route table |
 
-# modules/networking/output.tf
-output "vpc_id" {
-  value = aws_vpc.custom-vpc.id
-}
+3. **Create `modules/networking/output.tf`**:
+   | Output | Value | Consumed By |
+   |---|---|---|
+   | `vpc_id` | `aws_vpc.custom-vpc.id` | security_groups, load_balancer |
+   | `public_subnet_ids` | `values(aws_subnet.public_subnets)[*].id` | load_balancer |
+   | `private_subnet_ids` | `aws_subnet.private_subnets[*].id` | autoscaling_group |
 
-output "public_subnet_ids" {
-  description = "List of public subnet IDs (values from the for_each map)"
-  value       = values(aws_subnet.public_subnets)[*].id
-}
+4. **Add module call** to root `main.tf`:
+   ```hcl
+   module "networking" {
+     source = "./modules/networking"
 
-output "private_subnet_ids" {
-  description = "List of private subnet IDs"
-  value       = aws_subnet.private_subnets[*].id
-}
-```
+     vpc_cidr         = var.vpc_cidr
+     vpc_name         = var.vpc_name
+     route_table_name = var.route_table_name
+   }
+   ```
 
-**Root main.tf addition**:
-```hcl
-module "networking" {
-  source = "./modules/networking"
+5. **Delete flat files**: `custom-vpc.tf`, `locals.tf`, `private-network.tf`.
 
-  vpc_cidr         = var.vpc_cidr
-  vpc_name         = var.vpc_name
-  route_table_name = var.route_table_name
-}
-```
+6. **Rewire consumer references** in remaining flat files:
+   | File | Old Reference | New Reference |
+   |---|---|---|
+   | `sec-groups.tf` | `aws_vpc.custom-vpc.id` (×2, both SG blocks) | `module.networking.vpc_id` |
+   | `load-balancer.tf` | `aws_vpc.custom-vpc.id` | `module.networking.vpc_id` |
+   | `load-balancer.tf` | `values(aws_subnet.public_subnets)[*].id` | `module.networking.public_subnet_ids` |
+   | `autoscaling-group.tf` | `aws_subnet.private_subnets[*].id` | `module.networking.private_subnet_ids` |
 
-**Moved blocks added this task** (in `moved.tf`):
-```hcl
-# --- Networking (9) ---
-moved {
-  from = aws_vpc.custom-vpc
-  to   = module.networking.aws_vpc.custom-vpc
-}
-moved {
-  from = aws_subnet.public_subnets
-  to   = module.networking.aws_subnet.public_subnets
-}
-moved {
-  from = aws_internet_gateway.igw
-  to   = module.networking.aws_internet_gateway.igw
-}
-moved {
-  from = aws_nat_gateway.ngw
-  to   = module.networking.aws_nat_gateway.ngw
-}
-moved {
-  from = aws_route_table.public_rt
-  to   = module.networking.aws_route_table.public_rt
-}
-moved {
-  from = aws_route_table_association.public_assoc
-  to   = module.networking.aws_route_table_association.public_assoc
-}
-moved {
-  from = aws_subnet.private_subnets
-  to   = module.networking.aws_subnet.private_subnets
-}
-moved {
-  from = aws_route_table.private_rt
-  to   = module.networking.aws_route_table.private_rt
-}
-moved {
-  from = aws_route_table_association.private_assoc
-  to   = module.networking.aws_route_table_association.private_assoc
-}
-```
+7. **Add moved blocks** to `moved.tf` (9 entries):
+   | From | To |
+   |---|---|
+   | `aws_vpc.custom-vpc` | `module.networking.aws_vpc.custom-vpc` |
+   | `aws_subnet.public_subnets` | `module.networking.aws_subnet.public_subnets` |
+   | `aws_internet_gateway.igw` | `module.networking.aws_internet_gateway.igw` |
+   | `aws_nat_gateway.ngw` | `module.networking.aws_nat_gateway.ngw` |
+   | `aws_route_table.public_rt` | `module.networking.aws_route_table.public_rt` |
+   | `aws_route_table_association.public_assoc` | `module.networking.aws_route_table_association.public_assoc` |
+   | `aws_subnet.private_subnets` | `module.networking.aws_subnet.private_subnets` |
+   | `aws_route_table.private_rt` | `module.networking.aws_route_table.private_rt` |
+   | `aws_route_table_association.private_assoc` | `module.networking.aws_route_table_association.private_assoc` |
+
+8. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -475,6 +427,7 @@ terraform plan
 - Data sources and locals move into the module (they're internal implementation details).
 - Outputs shape the module's public API — only expose what other modules need.
 - The `for_each` and `count` patterns are preserved exactly as-is.
+- **Consumer rewiring**: Extracting a module isn't just moving files — you must update every remaining file that referenced the moved resources. The module output resolves to the same value, so plan stays clean.
 
 **Task conclusion**:
 Students learn to preserve behavior while changing structure, and see how iterator choice (`for_each` vs `count`) affects address stability.
@@ -483,89 +436,65 @@ Students learn to preserve behavior while changing structure, and see how iterat
 
 ### Task 4: Build the Security Groups Module (+ Moved Blocks)
 
-The security groups module introduces cross-resource dependencies within a module: the app SG's HTTP ingress rule references the ALB SG's ID. Keeping both security groups in one module for Phase 1 avoids circular dependency issues and keeps the refactor simple. Students learn how to expose multiple outputs from a single module.
+This module introduces cross-module wiring: the `module "security_groups"` call passes `module.networking.vpc_id` as an input variable — the first time a module call references another module's output. It also introduces a deliberate design decision: the app SG's HTTP ingress rule references the ALB SG's ID, so the two security groups are internally coupled. Keeping both in one module for Phase 1 avoids a circular dependency. The consumer rewiring pattern from Task 3 continues — `load-balancer.tf` and `autoscaling-group.tf` must switch their SG references to module outputs.
 
 **What students do**:
-1. Create `modules/security-groups/main.tf` — move all 7 resources verbatim from flat `sec-groups.tf`.
-2. Create `modules/security-groups/variables.tf` — needs: `vpc_id`, `security_group_name`, `account`.
-3. Create `modules/security-groups/output.tf` — needs to expose: `app_sg_id`, `alb_sg_id`.
-4. Add the `module "security_groups"` block to root `main.tf`.
-5. **Add SG moved blocks to `moved.tf` immediately** (7 entries — see [Section 7](#7-complete-moved-blocks-reference)).
-6. Run `terraform plan`.
 
-**Module interface**:
-```hcl
-# modules/security-groups/variables.tf
-variable "vpc_id" {
-  type        = string
-  description = "VPC ID to create security groups in"
-}
+1. **Create `modules/security-groups/main.tf`** — move these resources verbatim:
+   | # | Resource | Source File |
+   |---|---|---|
+   | 1 | `aws_security_group.allow-http-ssh` | `sec-groups.tf` |
+   | 2 | `aws_vpc_security_group_ingress_rule.allow-http-ipv4` | `sec-groups.tf` |
+   | 3 | `aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` | `sec-groups.tf` |
+   | 4 | `aws_vpc_security_group_egress_rule.allow-all-outbound` | `sec-groups.tf` |
+   | 5 | `aws_security_group.alb_sg` | `sec-groups.tf` |
+   | 6 | `aws_vpc_security_group_ingress_rule.alb_http_in` | `sec-groups.tf` |
+   | 7 | `aws_vpc_security_group_egress_rule.alb_all_out` | `sec-groups.tf` |
 
-variable "security_group_name" {
-  type        = string
-  description = "Name of the application security group"
-}
+2. **Create `modules/security-groups/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `vpc_id` | `string` | VPC ID to create security groups in |
+   | `security_group_name` | `string` | Name of the application security group |
+   | `account` | `string` | Account/user name prefix |
 
-variable "account" {
-  type        = string
-  description = "Account/user name prefix"
-}
+3. **Create `modules/security-groups/output.tf`**:
+   | Output | Value | Consumed By |
+   |---|---|---|
+   | `app_sg_id` | `aws_security_group.allow-http-ssh.id` | autoscaling_group |
+   | `alb_sg_id` | `aws_security_group.alb_sg.id` | load_balancer |
 
-# modules/security-groups/output.tf
-output "app_sg_id" {
-  description = "ID of the application security group (allow-http-ssh)"
-  value       = aws_security_group.allow-http-ssh.id
-}
+4. **Add module call** to root `main.tf`:
+   ```hcl
+   module "security_groups" {
+     source = "./modules/security-groups"
 
-output "alb_sg_id" {
-  description = "ID of the ALB security group"
-  value       = aws_security_group.alb_sg.id
-}
-```
+     vpc_id              = module.networking.vpc_id
+     security_group_name = var.security_group_name
+     account             = var.account
+   }
+   ```
 
-**Root main.tf addition**:
-```hcl
-module "security_groups" {
-  source = "./modules/security-groups"
+5. **Delete flat file**: `sec-groups.tf`.
 
-  vpc_id              = module.networking.vpc_id
-  security_group_name = var.security_group_name
-  account             = var.account
-}
-```
+6. **Rewire consumer references** in remaining flat files:
+   | File | Old Reference | New Reference |
+   |---|---|---|
+   | `load-balancer.tf` | `aws_security_group.alb_sg.id` | `module.security_groups.alb_sg_id` |
+   | `autoscaling-group.tf` | `aws_security_group.allow-http-ssh.id` | `module.security_groups.app_sg_id` |
 
-**Moved blocks added this task** (in `moved.tf`):
-```hcl
-# --- Security Groups (7) ---
-moved {
-  from = aws_security_group.allow-http-ssh
-  to   = module.security_groups.aws_security_group.allow-http-ssh
-}
-moved {
-  from = aws_vpc_security_group_ingress_rule.allow-http-ipv4
-  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4
-}
-moved {
-  from = aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
-  to   = module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4
-}
-moved {
-  from = aws_vpc_security_group_egress_rule.allow-all-outbound
-  to   = module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound
-}
-moved {
-  from = aws_security_group.alb_sg
-  to   = module.security_groups.aws_security_group.alb_sg
-}
-moved {
-  from = aws_vpc_security_group_ingress_rule.alb_http_in
-  to   = module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in
-}
-moved {
-  from = aws_vpc_security_group_egress_rule.alb_all_out
-  to   = module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out
-}
-```
+7. **Add moved blocks** to `moved.tf` (7 entries):
+   | From | To |
+   |---|---|
+   | `aws_security_group.allow-http-ssh` | `module.security_groups.aws_security_group.allow-http-ssh` |
+   | `aws_vpc_security_group_ingress_rule.allow-http-ipv4` | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4` |
+   | `aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` |
+   | `aws_vpc_security_group_egress_rule.allow-all-outbound` | `module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound` |
+   | `aws_security_group.alb_sg` | `module.security_groups.aws_security_group.alb_sg` |
+   | `aws_vpc_security_group_ingress_rule.alb_http_in` | `module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in` |
+   | `aws_vpc_security_group_egress_rule.alb_all_out` | `module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out` |
+
+8. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -578,6 +507,7 @@ terraform plan
 - Cross-module references: `module.networking.vpc_id` flows into this module.
 - Both SGs stay together because the app SG's HTTP rule references the ALB SG — internal coupling that doesn't need to leak out.
 - The module exposes both SG IDs so downstream modules can pick what they need.
+- **Consumer rewiring**: `load-balancer.tf` and `autoscaling-group.tf` still reference SG resources directly — those references must switch to module outputs.
 
 **Task conclusion**:
 Students see the value of grouping tightly coupled resources to reduce root clutter and cross-module coupling.
@@ -586,96 +516,67 @@ Students see the value of grouping tightly coupled resources to reduce root clut
 
 ### Task 5: Build the Load Balancer Module (+ Moved Blocks)
 
-The load balancer module is the first that consumes outputs from other modules (networking for subnet IDs, security groups for the ALB SG ID). This task reinforces cross-module wiring and teaches students that module output ownership matters — the ALB DNS name output moves from root to the load-balancer module.
+The load balancer module call wires inputs from two different modules — subnet IDs from networking and the ALB SG ID from security groups — showing how the dependency graph grows as modules compose. Like the S3 module in Task 2, the LB module owns an output (the ALB DNS name) that root re-exposes. Only `autoscaling-group.tf` remains as a flat file after this extraction.
 
 **What students do**:
-1. Create `modules/load-balancer/main.tf` — move all 3 ALB resources verbatim from flat `load-balancer.tf`.
-2. Create `modules/load-balancer/variables.tf` — needs: `account`, `vpc_id`, `alb_sg_id`, `public_subnet_ids`.
-3. Create `modules/load-balancer/output.tf` — needs to expose: `alb_dns_name`, `target_group_arn`.
-4. Add the `module "load_balancer"` block to root `main.tf`.
-5. **Keep the `load_balancer_dns` root output sourced from the load balancer module** — the LB module owns this output.
-6. **Add LB moved blocks to `moved.tf` immediately** (3 entries — see [Section 7](#7-complete-moved-blocks-reference)).
-7. Run `terraform plan`.
 
-**Module interface**:
-```hcl
-# modules/load-balancer/variables.tf
-variable "account" {
-  type        = string
-  description = "Account/user name prefix"
-}
+1. **Create `modules/load-balancer/main.tf`** — move these resources verbatim:
+   | # | Resource | Source File |
+   |---|---|---|
+   | 1 | `aws_lb.web_alb` | `load-balancer.tf` |
+   | 2 | `aws_lb_target_group.web_tg` | `load-balancer.tf` |
+   | 3 | `aws_lb_listener.web_listener` | `load-balancer.tf` |
 
-variable "vpc_id" {
-  type        = string
-  description = "VPC ID for the target group"
-}
+   > **Important change**: The ALB's `subnets` attribute in the flat config is `values(aws_subnet.public_subnets)[*].id`. In the module, subnet IDs arrive as a list variable, so change to `var.public_subnet_ids`.
 
-variable "alb_sg_id" {
-  type        = string
-  description = "Security group ID for the ALB"
-}
+2. **Create `modules/load-balancer/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `account` | `string` | Account/user name prefix |
+   | `vpc_id` | `string` | VPC ID for the target group |
+   | `alb_sg_id` | `string` | Security group ID for the ALB |
+   | `public_subnet_ids` | `list(string)` | List of public subnet IDs for the ALB |
 
-variable "public_subnet_ids" {
-  type        = list(string)
-  description = "List of public subnet IDs for the ALB"
-}
+3. **Create `modules/load-balancer/output.tf`**:
+   | Output | Value | Consumed By |
+   |---|---|---|
+   | `alb_dns_name` | `aws_lb.web_alb.dns_name` | root output |
+   | `target_group_arn` | `aws_lb_target_group.web_tg.arn` | autoscaling_group |
 
-# modules/load-balancer/output.tf
-output "alb_dns_name" {
-  description = "DNS name of the Application Load Balancer"
-  value       = aws_lb.web_alb.dns_name
-}
+4. **Add module call** to root `main.tf`:
+   ```hcl
+   module "load_balancer" {
+     source = "./modules/load-balancer"
 
-output "target_group_arn" {
-  description = "ARN of the target group for the ASG to attach to"
-  value       = aws_lb_target_group.web_tg.arn
-}
-```
+     account           = var.account
+     vpc_id            = module.networking.vpc_id
+     alb_sg_id         = module.security_groups.alb_sg_id
+     public_subnet_ids = module.networking.public_subnet_ids
+   }
+   ```
 
-**Root main.tf addition**:
-```hcl
-module "load_balancer" {
-  source = "./modules/load-balancer"
+5. **Add root output** (LB module owns this output, root re-exposes it):
+   ```hcl
+   output "load_balancer_dns" {
+     value = module.load_balancer.alb_dns_name
+   }
+   ```
 
-  account           = var.account
-  vpc_id            = module.networking.vpc_id
-  alb_sg_id         = module.security_groups.alb_sg_id
-  public_subnet_ids = module.networking.public_subnet_ids
-}
-```
+6. **Delete flat file**: `load-balancer.tf`.
 
-**Important change in module `main.tf`**: The ALB's `subnets` attribute in the flat config is:
-```hcl
-subnets = values(aws_subnet.public_subnets)[*].id
-```
-In the module, the subnet IDs arrive already as a list, so change to:
-```hcl
-subnets = var.public_subnet_ids
-```
+7. **Rewire consumer references** in the remaining flat file:
+   | File | Old Reference | New Reference |
+   |---|---|---|
+   | `autoscaling-group.tf` | `aws_lb_target_group.web_tg.arn` | `module.load_balancer.target_group_arn` |
 
-**Root output.tf — ALB DNS ownership**:
-```hcl
-output "load_balancer_dns" {
-  value = module.load_balancer.alb_dns_name
-}
-```
+8. **Add moved blocks** to `moved.tf` (3 entries):
+   | From | To |
+   |---|---|
+   | `aws_lb.web_alb` | `module.load_balancer.aws_lb.web_alb` |
+   | `aws_lb_target_group.web_tg` | `module.load_balancer.aws_lb_target_group.web_tg` |
+   | `aws_lb_listener.web_listener` | `module.load_balancer.aws_lb_listener.web_listener` |
 
-**Moved blocks added this task** (in `moved.tf`):
-```hcl
-# --- Load Balancer (3) ---
-moved {
-  from = aws_lb.web_alb
-  to   = module.load_balancer.aws_lb.web_alb
-}
-moved {
-  from = aws_lb_target_group.web_tg
-  to   = module.load_balancer.aws_lb_target_group.web_tg
-}
-moved {
-  from = aws_lb_listener.web_listener
-  to   = module.load_balancer.aws_lb_listener.web_listener
-}
-```
+9. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -688,6 +589,7 @@ terraform plan
 - Module consumes outputs from both `networking` and `security_groups` — shows the dependency graph.
 - The `subnets` line is the one place where module code differs from the flat original (list is pre-computed by the networking module's output).
 - The LB module owns the ALB DNS output; root re-exposes it. This is clean module contract design.
+- **Consumer rewiring**: `autoscaling-group.tf` is the last remaining flat resource file and needs its target group reference updated. After Task 6 extracts the ASG, no flat resource files will remain.
 
 **Task conclusion**:
 Students learn module contract design and output ownership boundaries. The LB module owns `alb_dns_name` and downstream consumers reference it through the root output.
@@ -696,133 +598,70 @@ Students learn module contract design and output ownership boundaries. The LB mo
 
 ### Task 6: Build the Autoscaling Group Module, Remove Dead Inputs (+ Moved Blocks)
 
-The final module migration covers the autoscaling group and introduces an important refactoring discipline: removing obsolete variables. Two root variables (`public_subnet_a_name` and `public_subnet_a_cidr`) were carried forward from earlier labs but no module consumes them. Cleaning them up here teaches students that refactoring includes tech-debt removal, not just file reorganization.
+The final module extraction is also the most complex module call — it wires inputs from three other modules (networking, security groups, and load balancer). With `autoscaling-group.tf` gone, no flat resource files remain and consumer rewiring is complete. This task also introduces refactoring discipline beyond file movement: two root variables (`public_subnet_a_name` and `public_subnet_a_cidr`) carried forward from earlier labs are consumed by nothing. Removing them teaches students that refactoring includes tech-debt cleanup.
 
 **What students do**:
-1. Create `modules/autoscaling-group/main.tf` — move the 2 ASG resources verbatim from flat `autoscaling-group.tf`.
-2. Create `modules/autoscaling-group/variables.tf` — needs: `account`, `region`, `image_id`, `instance_type`, `instance_count_min`, `instance_count_max`, `app_sg_id`, `private_subnet_ids`, `target_group_arn`, `user_data_base64`.
-3. Create `modules/autoscaling-group/output.tf` — (empty/none needed, unless you want to output the ASG name).
-4. Add the `module "autoscaling_group"` block to root `main.tf`.
-5. Finalize root `output.tf` to add `load_balancer_dns`.
-6. **Remove obsolete root variables** that no module consumes:
-   - `public_subnet_a_name` from `variables.tf`
-   - `public_subnet_a_cidr` from `variables.tf`
-   - The matching entries from `terraform.tfvars`
-7. **Add ASG moved blocks to `moved.tf` immediately** (2 entries — see [Section 7](#7-complete-moved-blocks-reference)).
-8. Run `terraform plan`.
 
-**Module interface**:
-```hcl
-# modules/autoscaling-group/variables.tf
-variable "account" {
-  type = string
-}
+1. **Create `modules/autoscaling-group/main.tf`** — move these resources verbatim:
+   | # | Resource | Source File |
+   |---|---|---|
+   | 1 | `aws_launch_template.web_template` | `autoscaling-group.tf` |
+   | 2 | `aws_autoscaling_group.web_asg` | `autoscaling-group.tf` |
 
-variable "image_id" {
-  type = string
-  description = "AMI ID for the region (already resolved by root)"
-}
+   > **Important changes** in module `main.tf` vs flat original:
+   > - `user_data = filebase64(...)` → `user_data = var.user_data_base64` (root passes it in)
+   > - `security_groups = [aws_security_group.allow-http-ssh.id]` → `security_groups = [var.app_sg_id]`
+   > - `vpc_zone_identifier = aws_subnet.private_subnets[*].id` → `vpc_zone_identifier = var.private_subnet_ids`
+   > - `target_group_arns = [aws_lb_target_group.web_tg.arn]` → `target_group_arns = [var.target_group_arn]`
+   > - `image_id = var.image_id[var.region]` → `image_id = var.image_id` (root resolves the map lookup)
 
-variable "instance_type" {
-  type    = string
-  default = "t3.micro"
-}
+2. **Create `modules/autoscaling-group/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `account` | `string` | Account/user name prefix |
+   | `image_id` | `string` | AMI ID (already resolved by root) |
+   | `instance_type` | `string` | EC2 instance type (default `t3.micro`) |
+   | `instance_count_min` | `number` | Minimum ASG size (default 1) |
+   | `instance_count_max` | `number` | Maximum ASG size (default 2) |
+   | `user_data_base64` | `string` | Base64-encoded user data script |
+   | `app_sg_id` | `string` | Security group ID for instances |
+   | `private_subnet_ids` | `list(string)` | Private subnet IDs for ASG placement |
+   | `target_group_arn` | `string` | ALB target group ARN |
 
-variable "instance_count_min" {
-  type    = number
-  default = 1
-  validation {
-    condition     = var.instance_count_min > 0 && var.instance_count_min <= 3
-    error_message = "Instance count min must be between 1 and 3."
-  }
-}
+3. **Create `modules/autoscaling-group/output.tf`** — none needed (no downstream consumers).
 
-variable "instance_count_max" {
-  type    = number
-  default = 2
-  validation {
-    condition     = var.instance_count_max >= 3 && var.instance_count_max <= 4
-    error_message = "Instance count max must be between 3 and 4."
-  }
-}
+4. **Add module call** to root `main.tf`:
+   ```hcl
+   module "autoscaling_group" {
+     source = "./modules/autoscaling-group"
 
-variable "user_data_base64" {
-  type        = string
-  description = "Base64-encoded user data script"
-}
+     account            = var.account
+     image_id           = var.image_id[var.region]
+     instance_type      = var.instance_type
+     instance_count_min = var.instance_count_min
+     instance_count_max = var.instance_count_max
+     user_data_base64   = filebase64("${path.module}/install_space_invaders.sh")
+     app_sg_id          = module.security_groups.app_sg_id
+     private_subnet_ids = module.networking.private_subnet_ids
+     target_group_arn   = module.load_balancer.target_group_arn
+   }
+   ```
 
-variable "app_sg_id" {
-  type        = string
-  description = "Security group ID for instances"
-}
+5. **Delete flat file**: `autoscaling-group.tf` (last flat resource file — no remaining files to rewire).
 
-variable "private_subnet_ids" {
-  type        = list(string)
-  description = "Private subnet IDs for ASG placement"
-}
+6. **Remove dead root variables** (no module consumes these):
+   | Variable | File | Action |
+   |---|---|---|
+   | `public_subnet_a_name` | `variables.tf` + `terraform.tfvars` | Delete both |
+   | `public_subnet_a_cidr` | `variables.tf` + `terraform.tfvars` | Delete both |
 
-variable "target_group_arn" {
-  type        = string
-  description = "ALB target group ARN"
-}
-```
+7. **Add moved blocks** to `moved.tf` (2 entries):
+   | From | To |
+   |---|---|
+   | `aws_launch_template.web_template` | `module.autoscaling_group.aws_launch_template.web_template` |
+   | `aws_autoscaling_group.web_asg` | `module.autoscaling_group.aws_autoscaling_group.web_asg` |
 
-**Changes in module `main.tf`** vs the flat original:
-- `user_data = filebase64(...)` → `user_data = var.user_data_base64` (root passes it in)
-- `security_groups = [aws_security_group.allow-http-ssh.id]` → `security_groups = [var.app_sg_id]`
-- `vpc_zone_identifier = aws_subnet.private_subnets[*].id` → `vpc_zone_identifier = var.private_subnet_ids`
-- `target_group_arns = [aws_lb_target_group.web_tg.arn]` → `target_group_arns = [var.target_group_arn]`
-- `image_id = var.image_id[var.region]` → `image_id = var.image_id` (root resolves the map lookup)
-
-**Root main.tf addition**:
-```hcl
-module "autoscaling_group" {
-  source = "./modules/autoscaling-group"
-
-  account            = var.account
-  image_id           = var.image_id[var.region]
-  instance_type      = var.instance_type
-  instance_count_min = var.instance_count_min
-  instance_count_max = var.instance_count_max
-  user_data_base64   = filebase64("${path.module}/install_space_invaders.sh")
-  app_sg_id          = module.security_groups.app_sg_id
-  private_subnet_ids = module.networking.private_subnet_ids
-  target_group_arn   = module.load_balancer.target_group_arn
-}
-```
-
-**Root output.tf finalization**:
-```hcl
-output "load_balancer_dns" {
-  value = module.load_balancer.alb_dns_name
-}
-```
-
-**Dead variable removal** (root `variables.tf`):
-```hcl
-# DELETE these — they are vestigial from Lab 02, no module consumes them
-variable "public_subnet_a_name" { ... }   # REMOVE
-variable "public_subnet_a_cidr" { ... }   # REMOVE
-```
-Also remove the matching entries from `terraform.tfvars`:
-```hcl
-# DELETE these lines from terraform.tfvars
-public_subnet_a_name = "..."   # REMOVE
-public_subnet_a_cidr = "..."   # REMOVE
-```
-
-**Moved blocks added this task** (in `moved.tf`):
-```hcl
-# --- Autoscaling Group (2) ---
-moved {
-  from = aws_launch_template.web_template
-  to   = module.autoscaling_group.aws_launch_template.web_template
-}
-moved {
-  from = aws_autoscaling_group.web_asg
-  to   = module.autoscaling_group.aws_autoscaling_group.web_asg
-}
-```
+8. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -846,7 +685,7 @@ Students complete Phase 1 modularization and see that refactoring includes clean
 
 ### Task 7: Apply and Verify
 
-Modularization is complete. Before cleaning up migration metadata, students apply the refactored configuration and prove the application still works. This is the moment the refactor pays off: zero resources recreated, zero downtime, same running application.
+All 26 resources are now in modules and every `terraform plan` so far has been clean — but nothing has been applied yet. This task runs `terraform apply` and proves the application still works end-to-end: zero resources recreated, zero downtime, same running website. This is the payoff moment that validates every decision made in Tasks 1–6.
 
 **What students do**:
 1. `terraform apply` — approve the plan (should be moves only).
@@ -908,34 +747,77 @@ Students learn lifecycle ownership of migration metadata and internalize the dis
 
 ### Task 9: Split Networking into VPC + Generic Subnets Module (+ Moved Blocks)
 
-Phase 2 shifts focus from "migration only" to "design for reuse". Students split the monolithic networking module into smaller, composable pieces: a standalone VPC module and a generic subnets module that is called twice (once for public, once for private). This also requires converting private subnets from `count` to `for_each` — a real-world migration pattern.
+Phase 2 begins with the biggest structural change in the lab: splitting one module into three. Students decompose the monolithic networking module into a standalone VPC module and a generic subnets module called twice (public and private). This requires converting private subnets from `count` to `for_each` — a real-world migration pattern with its own moved blocks. Because three other module calls referenced `module.networking.*`, all of them must be updated to point to the new module outputs.
 
 **What students do**:
-1. Create `modules/vpc/` — contains just:
-   - `aws_vpc.custom-vpc`
-   - `aws_internet_gateway.igw`
-   - `aws_nat_gateway.ngw`
-   - Variables: `vpc_cidr`, `vpc_name`
-   - Outputs: `vpc_id`, `igw_id`, `ngw_id`
 
-2. Create `modules/subnets/` — a **generic** module called twice:
-   - Uses `for_each` with a map of `{ az_name => cidr }`
-   - Creates subnets + a route table + route table associations
-   - Variables: `vpc_id`, `subnets` (map), `route_target` (object with `type` = "igw"|"nat" and `id`), `name_prefix`
-   - Outputs: `subnet_ids` (list), `route_table_id`
+1. **Create `modules/vpc/main.tf`** — move these resources from `modules/networking/main.tf`:
+   | # | Resource | Source |
+   |---|---|---|
+   | 1 | `aws_vpc.custom-vpc` | `modules/networking/main.tf` |
+   | 2 | `aws_internet_gateway.igw` | `modules/networking/main.tf` |
+   | 3 | `aws_nat_gateway.ngw` | `modules/networking/main.tf` |
 
-3. Convert **private subnets from `count` to `for_each`** — build a map similar to the public subnets pattern:
+2. **Create `modules/vpc/variables.tf`**:
+   | Variable | Type |
+   |---|---|
+   | `vpc_cidr` | `string` |
+   | `vpc_name` | `string` |
+
+3. **Create `modules/vpc/output.tf`**:
+   | Output | Value |
+   |---|---|
+   | `vpc_id` | `aws_vpc.custom-vpc.id` |
+   | `igw_id` | `aws_internet_gateway.igw.id` |
+   | `ngw_id` | `aws_nat_gateway.ngw.id` |
+
+4. **Create `modules/subnets/main.tf`** — a **generic** module (called twice), all using `for_each`:
+   | # | Resource | Key |
+   |---|---|---|
+   | 1 | `aws_subnet.subnets` | `for_each = var.subnets` |
+   | 2 | `aws_route_table.rt` | (single) |
+   | 3 | `aws_route_table_association.assoc` | `for_each = aws_subnet.subnets` |
+
+5. **Create `modules/subnets/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `vpc_id` | `string` | VPC ID |
+   | `vpc_name` | `string` | VPC name (for tags) |
+   | `subnets` | `map(string)` | Map of `{ az => cidr }` |
+   | `map_public_ip` | `bool` | Whether subnets get public IPs |
+   | `route_table_name` | `string` (default `null`) | Optional RT name tag |
+   | `route_target_type` | `string` | `"igw"` or `"nat"` |
+   | `route_target_id` | `string` | Gateway ID for the route |
+   | `subnet_name_prefix` | `string` | Prefix for subnet name tags |
+   | `subnet_name_by_az` | `map(string)` (default `{}`) | Optional per-AZ name overrides |
+
+6. **Create `modules/subnets/output.tf`**:
+   | Output | Value |
+   |---|---|
+   | `subnet_ids` | `values(aws_subnet.subnets)[*].id` |
+   | `subnet_ids_by_az` | `{ for k, v in aws_subnet.subnets : k => v.id }` |
+   | `route_table_id` | `aws_route_table.rt.id` |
+
+7. **Move `data` and `locals` blocks** from `modules/networking/main.tf` back to root `main.tf`. Add the `private_subnets` local alongside the existing `public_subnets` local:
    ```hcl
+   data "aws_availability_zones" "available" {
+     state = "available"
+   }
+
    locals {
+     public_subnets = {
+       for i, az in data.aws_availability_zones.available.names :
+       az => cidrsubnet(var.vpc_cidr, 4, i)
+     }
+
      private_subnets = {
        for i, az in data.aws_availability_zones.available.names :
        az => cidrsubnet(var.vpc_cidr, 4, i + 10)
      }
    }
    ```
-   This requires moved blocks to switch from `aws_subnet.private_subnets[0]` to `module.private_subnets.aws_subnet.subnets["us-east-2a"]`, etc.
 
-4. Update root `main.tf`:
+8. **Replace `module "networking"` call** with three new module calls:
    ```hcl
    module "vpc" {
      source   = "./modules/vpc"
@@ -944,31 +826,58 @@ Phase 2 shifts focus from "migration only" to "design for reuse". Students split
    }
 
    module "public_subnets" {
-     source      = "./modules/subnets"
-     vpc_id      = module.vpc.vpc_id
-     subnets     = local.public_subnets
-     route_target = { type = "igw", id = module.vpc.igw_id }
-     name_prefix = "${var.vpc_name}-public"
-     map_public_ip = true
+     source             = "./modules/subnets"
+     vpc_id             = module.vpc.vpc_id
+     vpc_name           = var.vpc_name
+     subnets            = local.public_subnets
+     map_public_ip      = true
+     route_table_name   = var.route_table_name
+     route_target_type  = "igw"
+     route_target_id    = module.vpc.igw_id
+     subnet_name_prefix = "public"
    }
 
    module "private_subnets" {
-     source      = "./modules/subnets"
-     vpc_id      = module.vpc.vpc_id
-     subnets     = local.private_subnets
-     route_target = { type = "nat", id = module.vpc.ngw_id }
-     name_prefix = "${var.vpc_name}-private"
-     map_public_ip = false
+     source             = "./modules/subnets"
+     vpc_id             = module.vpc.vpc_id
+     vpc_name           = var.vpc_name
+     subnets            = local.private_subnets
+     map_public_ip      = false
+     route_table_name   = null
+     route_target_type  = "nat"
+     route_target_id    = module.vpc.ngw_id
+     subnet_name_prefix = "private"
    }
    ```
 
-5. **Add moved blocks for the restructuring immediately** (in `moved.tf`):
-   - `module.networking.aws_vpc.custom-vpc` → `module.vpc.aws_vpc.custom-vpc`
-   - `module.networking.aws_subnet.public_subnets` → `module.public_subnets.aws_subnet.subnets`
-   - `module.networking.aws_subnet.private_subnets[0]` → `module.private_subnets.aws_subnet.subnets["us-east-2a"]` (one per AZ)
-   - etc.
+9. **Update downstream module calls** — all `module.networking.*` references change:
+   | Module Call | Old Reference | New Reference |
+   |---|---|---|
+   | `module "security_groups"` | `module.networking.vpc_id` | `module.vpc.vpc_id` |
+   | `module "load_balancer"` | `module.networking.vpc_id` | `module.vpc.vpc_id` |
+   | `module "load_balancer"` | `module.networking.public_subnet_ids` | `module.public_subnets.subnet_ids` |
+   | `module "autoscaling_group"` | `module.networking.private_subnet_ids` | `module.private_subnets.subnet_ids` |
 
-6. Run `terraform plan`.
+10. **Delete `modules/networking/` directory**.
+
+11. **Add moved blocks** to `moved.tf` (13 entries, including `count` → `for_each` per-AZ mappings):
+    | From | To |
+    |---|---|
+    | `module.networking.aws_vpc.custom-vpc` | `module.vpc.aws_vpc.custom-vpc` |
+    | `module.networking.aws_internet_gateway.igw` | `module.vpc.aws_internet_gateway.igw` |
+    | `module.networking.aws_nat_gateway.ngw` | `module.vpc.aws_nat_gateway.ngw` |
+    | `module.networking.aws_subnet.public_subnets` | `module.public_subnets.aws_subnet.subnets` |
+    | `module.networking.aws_route_table.public_rt` | `module.public_subnets.aws_route_table.rt` |
+    | `module.networking.aws_route_table_association.public_assoc` | `module.public_subnets.aws_route_table_association.assoc` |
+    | `module.networking.aws_subnet.private_subnets[0]` | `module.private_subnets.aws_subnet.subnets["us-east-2a"]` |
+    | `module.networking.aws_subnet.private_subnets[1]` | `module.private_subnets.aws_subnet.subnets["us-east-2b"]` |
+    | `module.networking.aws_subnet.private_subnets[2]` | `module.private_subnets.aws_subnet.subnets["us-east-2c"]` |
+    | `module.networking.aws_route_table.private_rt` | `module.private_subnets.aws_route_table.rt` |
+    | `module.networking.aws_route_table_association.private_assoc[0]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2a"]` |
+    | `module.networking.aws_route_table_association.private_assoc[1]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2b"]` |
+    | `module.networking.aws_route_table_association.private_assoc[2]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2c"]` |
+
+12. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -980,6 +889,8 @@ terraform plan
 - One module, two calls — this is the power of reusable modules.
 - `for_each` everywhere gives stable, readable state addresses.
 - The `count → for_each` migration is a real-world pattern students should know.
+- **Consumer rewiring**: When replacing a module, every reference to the old module's outputs must be updated in all downstream module calls — the same pattern as Phase 1's flat file rewiring.
+- Data sources and locals are implementation details. Moving them back to root when splitting a module is a normal part of refactoring module boundaries.
 
 **Task conclusion**:
 Students see how to optimize module granularity for reuse without breaking live infrastructure. The same `subnets` module serves both public and private use cases.
@@ -988,35 +899,32 @@ Students see how to optimize module granularity for reuse without breaking live 
 
 ### Task 10: Make Security Groups Generic (+ Moved Blocks)
 
-The final Phase 2 optimization applies the same "one module, multiple calls" pattern to security groups. Students replace the Phase 1 combined `security-groups` module with a generic `security-group` (singular) module that creates one SG with configurable rules, then call it twice. This is the most complex move of the lab because the rule resources change from named addresses to `for_each`-keyed addresses.
+Students apply the same "one module, multiple calls" pattern to security groups. The Phase 1 combined `security-groups` module is replaced by a generic `security-group` (singular) module that accepts configurable rule maps via complex variable types (`map(object({...}))`) and creates one SG per call. This is the most complex set of moved blocks in the lab — rule resources change from individually-named addresses to `for_each`-keyed addresses, and the two downstream module calls must switch from the old combined module's outputs to the new per-SG module outputs.
 
 **What students do**:
-1. Create `modules/security-group/` (singular) — a generic module that creates **one** SG with configurable rules:
-   ```hcl
-   variable "name"        { type = string }
-   variable "description" { type = string }
-   variable "vpc_id"      { type = string }
 
-   variable "ingress_rules" {
-     type = map(object({
-       from_port                    = number
-       to_port                      = number
-       ip_protocol                  = string
-       cidr_ipv4                    = optional(string)
-       referenced_security_group_id = optional(string)
-     }))
-   }
+1. **Create `modules/security-group/main.tf`** (singular) — a generic module that creates **one** SG with configurable rules:
+   | # | Resource | Key |
+   |---|---|---|
+   | 1 | `aws_security_group.this` | (single) |
+   | 2 | `aws_vpc_security_group_ingress_rule.ingress` | `for_each = var.ingress_rules` |
+   | 3 | `aws_vpc_security_group_egress_rule.egress` | `for_each = var.egress_rules` |
 
-   variable "egress_rules" {
-     type = map(object({
-       ip_protocol = string
-       cidr_ipv4   = optional(string)
-     }))
-   }
-   ```
-   Uses `for_each` over the rule maps to create `aws_vpc_security_group_ingress_rule` and `aws_vpc_security_group_egress_rule` resources.
+2. **Create `modules/security-group/variables.tf`**:
+   | Variable | Type | Description |
+   |---|---|---|
+   | `name` | `string` | Security group name |
+   | `description` | `string` | Security group description |
+   | `vpc_id` | `string` | VPC ID |
+   | `ingress_rules` | `map(object({ from_port, to_port, ip_protocol, cidr_ipv4?, referenced_security_group_id? }))` | Ingress rule map |
+   | `egress_rules` | `map(object({ ip_protocol, cidr_ipv4? }))` | Egress rule map |
 
-2. Call it twice from root:
+3. **Create `modules/security-group/output.tf`**:
+   | Output | Value |
+   |---|---|
+   | `sg_id` | `aws_security_group.this.id` |
+
+4. **Replace `module "security_groups"` call** with two new module calls:
    ```hcl
    module "alb_security_group" {
      source      = "./modules/security-group"
@@ -1046,11 +954,28 @@ The final Phase 2 optimization applies the same "one module, multiple calls" pat
    }
    ```
 
-3. **Add moved blocks** from the Phase 1 combined module to the two individual module calls immediately.
+5. **Update downstream module calls** — SG output name changes from combined to per-SG:
+   | Module Call | Old Reference | New Reference |
+   |---|---|---|
+   | `module "load_balancer"` | `module.security_groups.alb_sg_id` | `module.alb_security_group.sg_id` |
+   | `module "autoscaling_group"` | `module.security_groups.app_sg_id` | `module.app_security_group.sg_id` |
 
-4. Run `terraform plan`.
+6. **Delete `modules/security-groups/` directory** (plural, replaced by singular `modules/security-group/`).
 
-**Note**: The rule resources change from named (`allow-http-ipv4`) to `for_each`-keyed (`ingress["allow-http-ipv4"]`). This means the state addresses change. Students will need per-rule moved blocks. Using the original rule names as map keys (e.g., `alb_http_in`, `allow-http-ipv4`) keeps the moved blocks straightforward.
+7. **Add moved blocks** to `moved.tf` (7 entries — named → `for_each`-keyed):
+   | From | To |
+   |---|---|
+   | `module.security_groups.aws_security_group.alb_sg` | `module.alb_security_group.aws_security_group.this` |
+   | `module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in` | `module.alb_security_group.aws_vpc_security_group_ingress_rule.ingress["alb_http_in"]` |
+   | `module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out` | `module.alb_security_group.aws_vpc_security_group_egress_rule.egress["alb_all_out"]` |
+   | `module.security_groups.aws_security_group.allow-http-ssh` | `module.app_security_group.aws_security_group.this` |
+   | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4` | `module.app_security_group.aws_vpc_security_group_ingress_rule.ingress["allow-http-ipv4"]` |
+   | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` | `module.app_security_group.aws_vpc_security_group_ingress_rule.ingress["allow-ssh-ipv4"]` |
+   | `module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound` | `module.app_security_group.aws_vpc_security_group_egress_rule.egress["allow-all-outbound"]` |
+
+   > **Key insight**: Using the original rule names as map keys (e.g., `alb_http_in`, `allow-http-ipv4`) makes the moved blocks straightforward — the resource name becomes the `for_each` key.
+
+8. **Run `terraform plan`**.
 
 **Plan gate**:
 ```bash
@@ -1063,6 +988,7 @@ terraform plan
 - `for_each` over rule maps gives stable, named state addresses.
 - Order of module calls matters: ALB SG must be created before app SG (which references it).
 - Using map keys that match the original resource names simplifies moved blocks.
+- **Consumer rewiring**: `load_balancer` and `autoscaling_group` module calls must update their SG input references from the old combined module's outputs to the new individual module outputs.
 
 **Task conclusion**:
 Students finish Phase 2 with the most advanced pattern: generic, reusable modules with complex variable types and `for_each` iteration. The entire infrastructure has been modernized without a single resource being recreated.
@@ -1087,10 +1013,11 @@ Only the security-group approach changes. Everything else (VPC, subnets, S3, LB,
 
 ### Task 11 (Challenge): Replace Custom SG Module with Registry Module
 
-Students remove the local `modules/security-group/` module and replace both SG calls with the `terraform-aws-modules/security-group/aws` registry module. This is a fundamentally different refactor because the registry module has its own resource naming, which means new `moved` blocks mapping Phase 2 addresses to the registry module's internal addresses.
+Students replace the custom `security-group` module with the community-maintained `terraform-aws-modules/security-group/aws` from the Terraform Registry. This is a fundamentally different kind of refactor: the registry module has its own internal resource naming and its own output names (`security_group_id` instead of `sg_id`), so students must write new moved blocks *and* update every downstream reference to match the new output contract.
 
 **What students do**:
-1. Add a version-constrained source for the registry module:
+
+1. **Replace both `module "alb_security_group"` and `module "app_security_group"` calls** with registry module source:
    ```hcl
    module "alb_security_group" {
      source  = "terraform-aws-modules/security-group/aws"
@@ -1101,43 +1028,53 @@ Students remove the local `modules/security-group/` module and replace both SG c
      vpc_id      = module.vpc.vpc_id
 
      ingress_with_cidr_blocks = [
-       {
-         from_port   = 80
-         to_port     = 80
-         protocol    = "tcp"
-         cidr_blocks = "0.0.0.0/0"
-       }
+       { from_port = 80, to_port = 80, protocol = "tcp", cidr_blocks = "0.0.0.0/0" }
      ]
      egress_with_cidr_blocks = [
-       {
-         from_port   = 0
-         to_port     = 0
-         protocol    = "-1"
-         cidr_blocks = "0.0.0.0/0"
-       }
+       { from_port = 0, to_port = 0, protocol = "-1", cidr_blocks = "0.0.0.0/0" }
+     ]
+   }
+
+   module "app_security_group" {
+     source  = "terraform-aws-modules/security-group/aws"
+     version = "~> 5.0"
+
+     name        = var.security_group_name
+     description = "Enable HTTP and SSH Access"
+     vpc_id      = module.vpc.vpc_id
+
+     ingress_with_source_security_group_id = [
+       { from_port = 80, to_port = 80, protocol = "tcp", source_security_group_id = module.alb_security_group.security_group_id }
+     ]
+     ingress_with_cidr_blocks = [
+       { from_port = 22, to_port = 22, protocol = "tcp", cidr_blocks = "0.0.0.0/0" }
+     ]
+     egress_with_cidr_blocks = [
+       { from_port = 0, to_port = 0, protocol = "-1", cidr_blocks = "0.0.0.0/0" }
      ]
    }
    ```
 
-2. Replace the `app_security_group` module call similarly, using `ingress_with_source_security_group_id` for the ALB→app rule.
+2. **Update downstream references** — registry module outputs `security_group_id` (not `sg_id`):
+   | Module Call | Old Reference | New Reference |
+   |---|---|---|
+   | `module "app_security_group"` call | `module.alb_security_group.sg_id` | `module.alb_security_group.security_group_id` |
+   | `module "load_balancer"` | `module.alb_security_group.sg_id` | `module.alb_security_group.security_group_id` |
+   | `module "autoscaling_group"` | `module.app_security_group.sg_id` | `module.app_security_group.security_group_id` |
 
-3. **Add moved blocks** mapping Phase 2 custom module addresses to registry module internal addresses.
+3. **Delete `modules/security-group/` directory** (no longer needed).
 
-4. Delete the local `modules/security-group/` directory (no longer needed).
+4. **Add moved blocks** to `moved.tf` (2 entries — **SG base resources only**):
+   | From | To |
+   |---|---|
+   | `module.alb_security_group.aws_security_group.this` | `module.alb_security_group.aws_security_group.this[0]` |
+   | `module.app_security_group.aws_security_group.this` | `module.app_security_group.aws_security_group.this[0]` |
 
-5. Run `terraform init` (to download registry module) then `terraform plan`.
+   > **Critical limitation**: The registry module uses `aws_security_group_rule` (classic) while Phase 2 used `aws_vpc_security_group_*_rule` (VPC-native). These are **different resource types** — rules CANNOT be moved. Terraform will destroy the old VPC-native rules and create new classic rules. This is expected and unavoidable.
 
-**Plan gate**:
-```bash
-terraform init
-terraform plan
-# Expected: 0 to add, 0 to change, 0 to destroy
-```
+5. **Run `terraform init`** (downloads registry module), then **`terraform plan`**.
 
-**Important considerations**:
-- Registry module internal resource names differ from your custom module. Students must inspect the registry module source to determine the correct `moved` block targets.
-- Version constraints (`~> 5.0`) pin to a major version while allowing patches — a production best practice.
-- The registry module creates its own SG and rules internally; the `moved` blocks must map from `module.alb_security_group.aws_security_group.this` (Phase 2 custom) to the registry module's internal SG resource address.
+   > **Expected plan**: The SG resources show "has moved to" annotations. The old VPC-native rules are destroyed and new classic rules are created. This is NOT a zero-change plan — the rule type difference makes that impossible.
 
 **Discussion points** (compare local vs registry):
 - Input surface area: registry modules often have dozens of variables; local modules have exactly what you need.
@@ -1401,6 +1338,7 @@ The `run_phase_deploy_local.ps1` script performs full deploy testing with local 
 4. **Removing variables before references are fully rewired** — terraform validate catches this, but plan is better.
 5. **Leaving moved blocks in place after convergence** — creates confusion in future refactors.
 6. **Carrying obsolete variables forward** — tech debt accumulates; remove dead inputs during refactor.
+7. **Forgetting to rewire consumer references** — when extracting resources into a module, remaining flat files (Phase 1) or module calls (Phase 2/3) that referenced those resources must be updated to use module outputs. Missing this causes “reference to undeclared resource” errors.
 
 ---
 
@@ -1410,6 +1348,7 @@ The `run_phase_deploy_local.ps1` script performs full deploy testing with local 
 |---|---|
 | Module basics (source, variables, outputs) | Phase 1, Tasks 2–6 |
 | Cross-module references | Phase 1, Tasks 4–6 |
+| Consumer rewiring during module extraction | Phase 1, Tasks 3–6; Phase 2, Tasks 9–10; Phase 3, Task 11 |
 | `moved` blocks for safe refactoring | Phase 1, Tasks 2–6 (in-task, not deferred) |
 | `path.module` vs `path.root` | Phase 1, Task 6 |
 | Obsolete variable cleanup | Phase 1, Task 6 |
