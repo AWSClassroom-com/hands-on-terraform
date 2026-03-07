@@ -769,7 +769,26 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
    | `igw_id` | `aws_internet_gateway.igw.id` |
    | `ngw_id` | `aws_nat_gateway.ngw.id` |
 
-4. **Create `modules/subnets/main.tf`** — a **generic** module (called twice), all using `for_each`:
+4. **Create `modules/subnets/main.tf`** — a **generic** module that will be called twice (once for public, once for private). Copy the three public subnet resources from `modules/networking/main.tf` as your starting point:
+   - `aws_subnet.public_subnets` → rename to `aws_subnet.subnets`
+   - `aws_route_table.public_rt` → rename to `aws_route_table.rt`
+   - `aws_route_table_association.public_assoc` → rename to `aws_route_table_association.assoc`
+
+   Then generalize each resource so it works for *both* public and private subnets:
+
+   | Resource | What to generalize |
+   |---|---|
+  | `aws_subnet.subnets` | Replace `local.public_subnets` with the variable. Replace hardcoded `true` for public IP mapping with the variable. Replace the hardcoded `"public"` in the tag name with a variable-driven prefix. Support optional per-AZ name overrides via `lookup(var.subnet_name_by_az, each.key, <default-name>)`. |
+   | `aws_route_table.rt` | The route must work for *either* an IGW or a NAT gateway — only one of `gateway_id` / `nat_gateway_id` should be set per call, the other should be `null`. Use the `route_target_type` variable to decide which. |
+   | `aws_route_table_association.assoc` | Iterate over the generic subnet resource (new name) instead of the public-specific one. |
+
+   > **Hint** — the route table conditional is a new pattern. When a route can target either an IGW or a NAT gateway, use a conditional to set one and `null` the other:
+   > ```hcl
+   > gateway_id     = var.route_target_type == "igw" ? var.route_target_id : null
+   > nat_gateway_id = var.route_target_type == "nat" ? var.route_target_id : null
+   > ```
+
+   The final module should contain three resources:
    | # | Resource | Key |
    |---|---|---|
    | 1 | `aws_subnet.subnets` | `for_each = var.subnets` |
@@ -796,7 +815,7 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
    | `subnet_ids_by_az` | `{ for k, v in aws_subnet.subnets : k => v.id }` |
    | `route_table_id` | `aws_route_table.rt.id` |
 
-7. **Move `data` and `locals` blocks** from `modules/networking/main.tf` back to root `main.tf`. Add the `private_subnets` local alongside the existing `public_subnets` local:
+7. **Move `data` and `locals` blocks** from `modules/networking/main.tf` back to root `main.tf`. Add the `private_subnets` local alongside the existing `public_subnets` local, plus a `private_subnet_names_by_az` map to preserve private subnet name format (`...-private-0/1/2`) after moving to `for_each`:
    ```hcl
    data "aws_availability_zones" "available" {
      state = "available"
@@ -812,6 +831,11 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
        for i, az in data.aws_availability_zones.available.names :
        az => cidrsubnet(var.vpc_cidr, 4, i + 10)
      }
+
+      private_subnet_names_by_az = {
+        for i, az in data.aws_availability_zones.available.names :
+        az => "${var.vpc_name}-private-${i}"
+      }
    }
    ```
 
@@ -845,6 +869,7 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
      route_target_type  = "nat"
      route_target_id    = module.vpc.ngw_id
      subnet_name_prefix = "private"
+     subnet_name_by_az  = local.private_subnet_names_by_az
    }
    ```
 
@@ -867,13 +892,23 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
     | `module.networking.aws_subnet.public_subnets` | `module.public_subnets.aws_subnet.subnets` |
     | `module.networking.aws_route_table.public_rt` | `module.public_subnets.aws_route_table.rt` |
     | `module.networking.aws_route_table_association.public_assoc` | `module.public_subnets.aws_route_table_association.assoc` |
-    | `module.networking.aws_subnet.private_subnets[0]` | `module.private_subnets.aws_subnet.subnets["us-east-2a"]` |
-    | `module.networking.aws_subnet.private_subnets[1]` | `module.private_subnets.aws_subnet.subnets["us-east-2b"]` |
-    | `module.networking.aws_subnet.private_subnets[2]` | `module.private_subnets.aws_subnet.subnets["us-east-2c"]` |
+    | `module.networking.aws_subnet.private_subnets[0]` | `module.private_subnets.aws_subnet.subnets["<az-for-index-0>"]` |
+    | `module.networking.aws_subnet.private_subnets[1]` | `module.private_subnets.aws_subnet.subnets["<az-for-index-1>"]` |
+    | `module.networking.aws_subnet.private_subnets[2]` | `module.private_subnets.aws_subnet.subnets["<az-for-index-2>"]` |
+    | `...` | `... repeat for all private subnet indices in your current state ...` |
     | `module.networking.aws_route_table.private_rt` | `module.private_subnets.aws_route_table.rt` |
-    | `module.networking.aws_route_table_association.private_assoc[0]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2a"]` |
-    | `module.networking.aws_route_table_association.private_assoc[1]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2b"]` |
-    | `module.networking.aws_route_table_association.private_assoc[2]` | `module.private_subnets.aws_route_table_association.assoc["us-east-2c"]` |
+    | `module.networking.aws_route_table_association.private_assoc[0]` | `module.private_subnets.aws_route_table_association.assoc["<az-for-index-0>"]` |
+    | `module.networking.aws_route_table_association.private_assoc[1]` | `module.private_subnets.aws_route_table_association.assoc["<az-for-index-1>"]` |
+    | `module.networking.aws_route_table_association.private_assoc[2]` | `module.private_subnets.aws_route_table_association.assoc["<az-for-index-2>"]` |
+    | `...` | `... repeat for all private association indices in your current state ...` |
+
+    > **Important**: Do not hardcode `us-east-2a/b/c` unless that is actually what your state uses. The right-hand keys must match the real AZ names for each existing index in your current region/account.
+
+    **How to find the correct AZ key for each index**:
+    1. List indexed private subnets in state: `terraform state list | findstr "module.networking.aws_subnet.private_subnets["`
+    2. For each index (for example `[0]`), inspect the AZ: `terraform state show module.networking.aws_subnet.private_subnets[0]`
+    3. Use that AZ string as the `for_each` key in both moved blocks for that index (subnet + association).
+
 
 12. **Run `terraform plan`**.
 

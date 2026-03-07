@@ -58,84 +58,113 @@ module "private_subnets" {
 }
 
 module "alb_security_group" {
-  source  = "terraform-aws-modules/security-group/aws"
-  version = "~> 5.0"
+  source = "./modules/security-group"
 
   name        = "${var.account}-alb-sg"
   description = "Allow HTTP from internet to ALB"
   vpc_id      = module.vpc.vpc_id
 
-  ingress_with_cidr_blocks = [
-    {
+  ingress_rules = {
+    alb_http_in = {
       from_port   = 80
       to_port     = 80
-      protocol    = "tcp"
-      cidr_blocks = "0.0.0.0/0"
+      ip_protocol = "tcp"
+      cidr_ipv4   = "0.0.0.0/0"
     }
-  ]
+  }
 
-  egress_with_cidr_blocks = [
-    {
-      from_port   = 0
-      to_port     = 0
-      protocol    = "-1"
-      cidr_blocks = "0.0.0.0/0"
+  egress_rules = {
+    alb_all_out = {
+      ip_protocol = "-1"
+      cidr_ipv4   = "0.0.0.0/0"
     }
-  ]
+  }
 }
 
 module "app_security_group" {
-  source  = "terraform-aws-modules/security-group/aws"
-  version = "~> 5.0"
+  source = "./modules/security-group"
 
   name        = var.security_group_name
   description = "Enable HTTP and SSH Access"
   vpc_id      = module.vpc.vpc_id
 
-  ingress_with_source_security_group_id = [
-    {
-      from_port                = 80
-      to_port                  = 80
-      protocol                 = "tcp"
-      source_security_group_id = module.alb_security_group.security_group_id
+  ingress_rules = {
+    allow-http-ipv4 = {
+      from_port                    = 80
+      to_port                      = 80
+      ip_protocol                  = "tcp"
+      referenced_security_group_id = module.alb_security_group.sg_id
     }
-  ]
-
-  ingress_with_cidr_blocks = [
-    {
+    allow-ssh-ipv4 = {
       from_port   = 22
       to_port     = 22
-      protocol    = "tcp"
-      cidr_blocks = "0.0.0.0/0"
+      ip_protocol = "tcp"
+      cidr_ipv4   = "0.0.0.0/0"
     }
-  ]
+  }
 
-  egress_with_cidr_blocks = [
-    {
-      from_port   = 0
-      to_port     = 0
-      protocol    = "-1"
-      cidr_blocks = "0.0.0.0/0"
+  egress_rules = {
+    allow-all-outbound = {
+      ip_protocol = "-1"
+      cidr_ipv4   = "0.0.0.0/0"
     }
-  ]
+  }
 }
 
 module "load_balancer" {
-  source = "./modules/load-balancer"
+  source  = "terraform-aws-modules/alb/aws"
+  version = "~> 10.0"
 
-  account            = var.account
-  vpc_id             = module.vpc.vpc_id
-  public_subnet_ids  = module.public_subnets.subnet_ids
-  security_group_ids = [module.alb_security_group.security_group_id]
+  name            = "${var.account}-alb"
+  vpc_id          = module.vpc.vpc_id
+  subnets         = module.public_subnets.subnet_ids
+  security_groups = [module.alb_security_group.sg_id]
+
+  create_security_group      = false
+  enable_deletion_protection = false
+  drop_invalid_header_fields = false
+
+  listeners = {
+    web_listener = {
+      port     = 80
+      protocol = "HTTP"
+
+      forward = {
+        target_group_key = "web_tg"
+      }
+    }
+  }
+
+  target_groups = {
+    web_tg = {
+      name              = "${var.account}-tg"
+      protocol          = "HTTP"
+      port              = 80
+      target_type       = "instance"
+      create_attachment  = false
+
+      health_check = {
+        path                = "/"
+        healthy_threshold   = 2
+        unhealthy_threshold = 2
+        timeout             = 3
+        interval            = 30
+        matcher             = "200"
+      }
+    }
+  }
 }
 
 module "autoscaling_group" {
   source = "./modules/autoscaling-group"
 
-  instance_type       = var.instance_type
-  instance_count_max  = var.instance_count_max
-  target_group_arns   = [module.load_balancer.target_group_arn]
-  subnet_ids          = module.private_subnets.subnet_ids
-  security_group_ids  = [module.app_security_group.security_group_id]
-  user_data_base64    = filebase64("${path.root}/install_space_invaders.sh")
+  account            = var.account
+  image_id           = var.image_id[var.region]
+  instance_type      = var.instance_type
+  instance_count_min = var.instance_count_min
+  instance_count_max = var.instance_count_max
+  user_data_base64   = filebase64("${path.module}/install_space_invaders.sh")
+  app_sg_id          = module.app_security_group.sg_id
+  private_subnet_ids = module.private_subnets.subnet_ids
+  target_group_arn   = module.load_balancer.target_groups["web_tg"].arn
 }

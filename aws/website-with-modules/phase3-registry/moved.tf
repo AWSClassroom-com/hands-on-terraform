@@ -1,28 +1,33 @@
-# Phase 3: Custom SG module → Registry module address mappings
+# Phase 3: Custom load-balancer module → Registry ALB module address mappings
 #
-# The terraform-aws-modules/security-group/aws registry module creates
-# its security group as aws_security_group.this[0] internally.
-# Our Phase 2 custom module used aws_security_group.this (no index).
+# The terraform-aws-modules/alb/aws registry module creates resources
+# internally using count and for_each with map keys we control:
+#   - aws_lb.this[0]                       (count)
+#   - aws_lb_target_group.this["<key>"]    (for_each over target_groups map)
+#   - aws_lb_listener.this["<key>"]        (for_each over listeners map)
 #
-# Ingress/egress rules in the registry module use different resource
-# types (aws_security_group_rule) vs our Phase 2 VPC security group
-# rules (aws_vpc_security_group_ingress_rule / egress_rule).
+# Our Phase 2 custom load-balancer module used simple resource names:
+#   - aws_lb.web_alb
+#   - aws_lb_target_group.web_tg
+#   - aws_lb_listener.web_listener
 #
-# Because the registry module uses aws_security_group_rule (classic)
-# while Phase 2 used aws_vpc_security_group_*_rule (VPC-native),
-# the rule resources CANNOT be moved — they are different resource types.
-# Only the security group resources themselves can be moved.
-# Terraform will destroy the old VPC-native rules and create new
-# classic rules — this is expected and unavoidable.
+# All three resource types match exactly, so moved blocks achieve
+# a zero-change plan.
 
-# --- ALB Security Group ---
+# --- Application Load Balancer ---
 moved {
-  from = module.alb_security_group.aws_security_group.this
-  to   = module.alb_security_group.aws_security_group.this[0]
+  from = module.load_balancer.aws_lb.web_alb
+  to   = module.load_balancer.aws_lb.this[0]
 }
 
-# --- App Security Group ---
+# --- Target Group ---
 moved {
-  from = module.app_security_group.aws_security_group.this
-  to   = module.app_security_group.aws_security_group.this[0]
+  from = module.load_balancer.aws_lb_target_group.web_tg
+  to   = module.load_balancer.aws_lb_target_group.this["web_tg"]
+}
+
+# --- Listener ---
+moved {
+  from = module.load_balancer.aws_lb_listener.web_listener
+  to   = module.load_balancer.aws_lb_listener.this["web_listener"]
 }
