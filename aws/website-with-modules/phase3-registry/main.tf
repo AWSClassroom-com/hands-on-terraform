@@ -57,58 +57,12 @@ module "private_subnets" {
   subnet_name_by_az  = local.private_subnet_names_by_az
 }
 
-module "alb_security_group" {
-  source = "./modules/security-group"
+module "security_groups" {
+  source = "./modules/security-groups"
 
-  name        = "${var.account}-alb-sg"
-  description = "Allow HTTP from internet to ALB"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress_rules = {
-    alb_http_in = {
-      from_port   = 80
-      to_port     = 80
-      ip_protocol = "tcp"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
-  }
-
-  egress_rules = {
-    alb_all_out = {
-      ip_protocol = "-1"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
-  }
-}
-
-module "app_security_group" {
-  source = "./modules/security-group"
-
-  name        = var.security_group_name
-  description = "Enable HTTP and SSH Access"
-  vpc_id      = module.vpc.vpc_id
-
-  ingress_rules = {
-    allow-http-ipv4 = {
-      from_port                    = 80
-      to_port                      = 80
-      ip_protocol                  = "tcp"
-      referenced_security_group_id = module.alb_security_group.sg_id
-    }
-    allow-ssh-ipv4 = {
-      from_port   = 22
-      to_port     = 22
-      ip_protocol = "tcp"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
-  }
-
-  egress_rules = {
-    allow-all-outbound = {
-      ip_protocol = "-1"
-      cidr_ipv4   = "0.0.0.0/0"
-    }
-  }
+  vpc_id              = module.vpc.vpc_id
+  security_group_name = var.security_group_name
+  account             = var.account
 }
 
 module "load_balancer" {
@@ -118,7 +72,7 @@ module "load_balancer" {
   name            = "${var.account}-alb"
   vpc_id          = module.vpc.vpc_id
   subnets         = module.public_subnets.subnet_ids
-  security_groups = [module.alb_security_group.sg_id]
+  security_groups = [module.security_groups.alb_sg_id]
 
   create_security_group      = false
   enable_deletion_protection = false
@@ -164,7 +118,7 @@ module "autoscaling_group" {
   instance_count_min = var.instance_count_min
   instance_count_max = var.instance_count_max
   user_data_base64   = filebase64("${path.module}/install_space_invaders.sh")
-  app_sg_id          = module.app_security_group.sg_id
+  app_sg_id          = module.security_groups.app_sg_id
   private_subnet_ids = module.private_subnets.subnet_ids
   target_group_arn   = module.load_balancer.target_groups["web_tg"].arn
 }

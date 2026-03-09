@@ -197,10 +197,8 @@ website-with-modules/
 │   │   ├── main.tf              # Uses for_each for both
 │   │   ├── variables.tf
 │   │   └── output.tf
-│   ├── security-group/           # RENAMED: Generic — called per SG
-│   │   ├── main.tf              # 1 SG + dynamic rules
-│   │   ├── variables.tf
-│   │   └── output.tf
+│   ├── security-groups/          # Unchanged from Phase 1
+│   │   └── ...
 │   ├── load-balancer/            # Unchanged from Phase 1
 │   │   └── ...
 │   └── autoscaling-group/        # Unchanged from Phase 1
@@ -225,13 +223,14 @@ website-with-modules/
 │   │   └── ...
 │   ├── subnets/                  # Unchanged from Phase 2
 │   │   └── ...
+│   ├── security-groups/          # Unchanged from Phase 2
+│   │   └── ...
 │   ├── load-balancer/            # Unchanged from Phase 2
 │   │   └── ...
 │   └── autoscaling-group/        # Unchanged from Phase 2
 │       └── ...
-│   (security-group/ module removed — replaced by registry module)
-├── main.tf                       # Registry module calls replace local SG module
-├── moved.tf                      # Maps Phase 2 custom SG → registry internal addresses
+├── main.tf                       # Registry ALB module replaces local load-balancer module call
+├── moved.tf                      # Maps Phase 2 custom LB → registry ALB internal addresses
 └── (all other root files unchanged from Phase 2)
 ```
 
@@ -749,6 +748,19 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
 
 **What students do**:
 
+**Before Step 1 (required): capture private subnet index -> AZ mapping from current Phase 1 state.**
+Run these commands before replacing `module "networking"` or deleting `modules/networking/`.
+
+```bash
+# Bash
+terraform state list | grep -F 'module.networking.aws_subnet.private_subnets['
+terraform state show 'module.networking.aws_subnet.private_subnets[0]'
+terraform state show 'module.networking.aws_subnet.private_subnets[1]'
+terraform state show 'module.networking.aws_subnet.private_subnets[n]'
+```
+
+Record a small mapping table (for example: `[0] -> us-east-2a`, `[1] -> us-east-2b`, `[2] -> us-east-2c`) and reuse it when writing moved blocks in Step 11.
+
 1. **Create `modules/vpc/main.tf`** — move these resources from `modules/networking/main.tf`:
    | # | Resource | Source |
    |---|---|---|
@@ -902,12 +914,13 @@ Phase 2 begins with the biggest structural change in the lab: splitting one modu
     | `module.networking.aws_route_table_association.private_assoc[2]` | `module.private_subnets.aws_route_table_association.assoc["<az-for-index-2>"]` |
     | `...` | `... repeat for all private association indices in your current state ...` |
 
-    > **Important**: Do not hardcode `us-east-2a/b/c` unless that is actually what your state uses. The right-hand keys must match the real AZ names for each existing index in your current region/account.
+    > **Important**: Do not hardcode `us-east-2a/b/c` unless that is actually what your state uses. The right-hand keys must match the real AZ names for each existing index in your current region/account. Use the mapping table you documented at the start of the task in this.
 
-    **How to find the correct AZ key for each index**:
-    1. List indexed private subnets in state: `terraform state list | findstr "module.networking.aws_subnet.private_subnets["`
-    2. For each index (for example `[0]`), inspect the AZ: `terraform state show module.networking.aws_subnet.private_subnets[0]`
-    3. Use that AZ string as the `for_each` key in both moved blocks for that index (subnet + association).
+
+    **If you get `Error: Module not installed` while running `terraform state show`**:
+    1. Run `terraform init` in the current folder.
+    2. Confirm `main.tf` no longer references `module "networking"` after Step 8.
+    3. If the error mentions `module.networking` cache/path missing, you attempted lookup after removing or invalidating that module. Use the pre-captured index -> AZ mapping from the beginning of Task 9, or temporarily restore the pre-Task-9 config, capture mapping, then continue.
 
 
 12. **Run `terraform plan`**.
@@ -930,195 +943,63 @@ Students see how to optimize module granularity for reuse without breaking live 
 
 ---
 
-### Task 10: Make Security Groups Generic (+ Moved Blocks)
 
-Students apply the same "one module, multiple calls" pattern to security groups. The Phase 1 combined `security-groups` module is replaced by a generic `security-group` (singular) module that accepts configurable rule maps via complex variable types (`map(object({...}))`) and creates one SG per call. This is the most complex set of moved blocks in the lab — rule resources change from individually-named addresses to `for_each`-keyed addresses, and the two downstream module calls must switch from the old combined module's outputs to the new per-SG module outputs.
+## 6. Phase 3 — Optional Challenge: Replace Local Load-Balancer Module with Terraform Registry Module
 
-**What students do**:
-
-1. **Create `modules/security-group/main.tf`** (singular) — a generic module that creates **one** SG with configurable rules:
-   | # | Resource | Key |
-   |---|---|---|
-   | 1 | `aws_security_group.this` | (single) |
-   | 2 | `aws_vpc_security_group_ingress_rule.ingress` | `for_each = var.ingress_rules` |
-   | 3 | `aws_vpc_security_group_egress_rule.egress` | `for_each = var.egress_rules` |
-
-2. **Create `modules/security-group/variables.tf`**:
-   | Variable | Type | Description |
-   |---|---|---|
-   | `name` | `string` | Security group name |
-   | `description` | `string` | Security group description |
-   | `vpc_id` | `string` | VPC ID |
-   | `ingress_rules` | `map(object({ from_port, to_port, ip_protocol, cidr_ipv4?, referenced_security_group_id? }))` | Ingress rule map |
-   | `egress_rules` | `map(object({ ip_protocol, cidr_ipv4? }))` | Egress rule map |
-
-3. **Create `modules/security-group/output.tf`**:
-   | Output | Value |
-   |---|---|
-   | `sg_id` | `aws_security_group.this.id` |
-
-4. **Replace `module "security_groups"` call** with two new module calls:
-   ```hcl
-   module "alb_security_group" {
-     source      = "./modules/security-group"
-     name        = "${var.account}-alb-sg"
-     description = "Allow HTTP from internet to ALB"
-     vpc_id      = module.vpc.vpc_id
-     ingress_rules = {
-       alb_http_in = { from_port = 80, to_port = 80, ip_protocol = "tcp", cidr_ipv4 = "0.0.0.0/0" }
-     }
-     egress_rules = {
-       alb_all_out = { ip_protocol = "-1", cidr_ipv4 = "0.0.0.0/0" }
-     }
-   }
-
-   module "app_security_group" {
-     source      = "./modules/security-group"
-     name        = var.security_group_name
-     description = "Enable HTTP and SSH Access"
-     vpc_id      = module.vpc.vpc_id
-     ingress_rules = {
-       allow-http-ipv4 = { from_port = 80, to_port = 80, ip_protocol = "tcp", referenced_security_group_id = module.alb_security_group.sg_id }
-       allow-ssh-ipv4  = { from_port = 22, to_port = 22, ip_protocol = "tcp", cidr_ipv4 = "0.0.0.0/0" }
-     }
-     egress_rules = {
-       allow-all-outbound = { ip_protocol = "-1", cidr_ipv4 = "0.0.0.0/0" }
-     }
-   }
-   ```
-
-5. **Update downstream module calls** — SG output name changes from combined to per-SG:
-   | Module Call | Old Reference | New Reference |
-   |---|---|---|
-   | `module "load_balancer"` | `module.security_groups.alb_sg_id` | `module.alb_security_group.sg_id` |
-   | `module "autoscaling_group"` | `module.security_groups.app_sg_id` | `module.app_security_group.sg_id` |
-
-6. **Delete `modules/security-groups/` directory** (plural, replaced by singular `modules/security-group/`).
-
-7. **Add moved blocks** to `moved.tf` (7 entries — named → `for_each`-keyed):
-   | From | To |
-   |---|---|
-   | `module.security_groups.aws_security_group.alb_sg` | `module.alb_security_group.aws_security_group.this` |
-   | `module.security_groups.aws_vpc_security_group_ingress_rule.alb_http_in` | `module.alb_security_group.aws_vpc_security_group_ingress_rule.ingress["alb_http_in"]` |
-   | `module.security_groups.aws_vpc_security_group_egress_rule.alb_all_out` | `module.alb_security_group.aws_vpc_security_group_egress_rule.egress["alb_all_out"]` |
-   | `module.security_groups.aws_security_group.allow-http-ssh` | `module.app_security_group.aws_security_group.this` |
-   | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-http-ipv4` | `module.app_security_group.aws_vpc_security_group_ingress_rule.ingress["allow-http-ipv4"]` |
-   | `module.security_groups.aws_vpc_security_group_ingress_rule.allow-ssh-ipv4` | `module.app_security_group.aws_vpc_security_group_ingress_rule.ingress["allow-ssh-ipv4"]` |
-   | `module.security_groups.aws_vpc_security_group_egress_rule.allow-all-outbound` | `module.app_security_group.aws_vpc_security_group_egress_rule.egress["allow-all-outbound"]` |
-
-   > **Key insight**: Using the original rule names as map keys (e.g., `alb_http_in`, `allow-http-ipv4`) makes the moved blocks straightforward — the resource name becomes the `for_each` key.
-
-8. **Run `terraform plan`**.
-
-**Plan gate**:
-```bash
-terraform plan
-# Expected: 0 to add, 0 to change, 0 to destroy
-```
-
-**Teaching points**:
-- One generic module eliminates repeated boilerplate.
-- `for_each` over rule maps gives stable, named state addresses.
-- Order of module calls matters: ALB SG must be created before app SG (which references it).
-- Using map keys that match the original resource names simplifies moved blocks.
-- **Consumer rewiring**: `load_balancer` and `autoscaling_group` module calls must update their SG input references from the old combined module's outputs to the new individual module outputs.
-
-**Task conclusion**:
-Students finish Phase 2 with the most advanced pattern: generic, reusable modules with complex variable types and `for_each` iteration. The entire infrastructure has been modernized without a single resource being recreated.
-
----
-
-## 6. Phase 3 — Optional Challenge: Replace Local SG Module with Terraform Registry Module
-
-**Goal**: For advanced students who want additional practice. This optional phase replaces the custom `security-group` module built in Phase 2 with the community-maintained `terraform-aws-modules/security-group/aws` from the Terraform Registry. This teaches build-vs-buy decision making, version constraints, and how to work with third-party module interfaces.
+**Goal**: For advanced students who want additional practice. This optional phase replaces the custom `load-balancer` module from Phase 1/2 with the community-maintained `terraform-aws-modules/alb/aws` from the Terraform Registry. This teaches build-vs-buy decision making, version constraints, and how to consume third-party module interfaces while preserving live infrastructure.
 
 > **Note**: This phase is entirely optional. Students who complete Phases 1 and 2 have already achieved the core learning objectives. Phase 3 is a challenge extension.
 
 ### Why a Separate Phase?
 
-Mixing registry module exploration into the same task as the SG refactor would overload students with two unrelated concepts at once (generic module design *and* registry consumption). Separating them lets each phase stand on its own learning objective:
-- Phase 2: Design reusable modules.
-- Phase 3: Evaluate and consume community modules.
+Registry-module consumption is a different skill from module design/refactoring. Keeping this in a separate phase prevents cognitive overload:
+- Phase 2: Refactor internals for reuse (`vpc` + generic `subnets`).
+- Phase 3: Consume and evaluate a registry module.
 
 ### What Changes from Phase 2?
 
-Only the security-group approach changes. Everything else (VPC, subnets, S3, LB, ASG) remains identical to Phase 2. The `phase3-registry/` directory in the repository contains **only the files that differ from Phase 2**.
+Only the load-balancer implementation changes. Security groups remain the original `security-groups` module from Phase 1. Everything else (VPC, subnets, S3, ASG) stays the same. The `phase3-registry/` directory contains only files that differ from Phase 2.
 
-### Task 11 (Challenge): Replace Custom SG Module with Registry Module
+### Task 10 (Challenge): Replace Custom Load-Balancer Module with Registry ALB Module
 
-Students replace the custom `security-group` module with the community-maintained `terraform-aws-modules/security-group/aws` from the Terraform Registry. This is a fundamentally different kind of refactor: the registry module has its own internal resource naming and its own output names (`security_group_id` instead of `sg_id`), so students must write new moved blocks *and* update every downstream reference to match the new output contract.
+Students replace `source = "./modules/load-balancer"` with `source = "terraform-aws-modules/alb/aws"`, then rewire downstream references and add moved blocks for the three LB resources.
 
 **What students do**:
 
-1. **Replace both `module "alb_security_group"` and `module "app_security_group"` calls** with registry module source:
-   ```hcl
-   module "alb_security_group" {
-     source  = "terraform-aws-modules/security-group/aws"
-     version = "~> 5.0"
+1. Replace the root `module "load_balancer"` call with registry ALB module (`~> 10.0`) and keep behavior equivalent:
+  - ALB name, VPC, subnets, and SG wiring must stay equivalent.
+  - Listener should still be HTTP/80 forwarding to one target group.
+  - Target group health check values should match current behavior.
 
-     name        = "${var.account}-alb-sg"
-     description = "Allow HTTP from internet to ALB"
-     vpc_id      = module.vpc.vpc_id
+2. Keep the existing `module "security_groups"` call unchanged. Update the new ALB module inputs to consume SG ID from `module.security_groups.alb_sg_id`.
 
-     ingress_with_cidr_blocks = [
-       { from_port = 80, to_port = 80, protocol = "tcp", cidr_blocks = "0.0.0.0/0" }
-     ]
-     egress_with_cidr_blocks = [
-       { from_port = 0, to_port = 0, protocol = "-1", cidr_blocks = "0.0.0.0/0" }
-     ]
-   }
+3. Update ASG input reference because registry ALB output shape differs:
+  - `target_group_arn = module.load_balancer.target_group_arn`
+  - becomes `target_group_arn = module.load_balancer.target_groups["web_tg"].arn`
 
-   module "app_security_group" {
-     source  = "terraform-aws-modules/security-group/aws"
-     version = "~> 5.0"
+4. Add moved blocks for the three load-balancer resources:
+  | From | To |
+  |---|---|
+  | `module.load_balancer.aws_lb.web_alb` | `module.load_balancer.aws_lb.this[0]` |
+  | `module.load_balancer.aws_lb_target_group.web_tg` | `module.load_balancer.aws_lb_target_group.this["web_tg"]` |
+  | `module.load_balancer.aws_lb_listener.web_listener` | `module.load_balancer.aws_lb_listener.this["web_listener"]` |
 
-     name        = var.security_group_name
-     description = "Enable HTTP and SSH Access"
-     vpc_id      = module.vpc.vpc_id
+5. Update root output if needed:
+  - `module.load_balancer.alb_dns_name` becomes `module.load_balancer.dns_name`.
 
-     ingress_with_source_security_group_id = [
-       { from_port = 80, to_port = 80, protocol = "tcp", source_security_group_id = module.alb_security_group.security_group_id }
-     ]
-     ingress_with_cidr_blocks = [
-       { from_port = 22, to_port = 22, protocol = "tcp", cidr_blocks = "0.0.0.0/0" }
-     ]
-     egress_with_cidr_blocks = [
-       { from_port = 0, to_port = 0, protocol = "-1", cidr_blocks = "0.0.0.0/0" }
-     ]
-   }
-   ```
+6. Run `terraform init`, then `terraform plan`.
 
-2. **Update downstream references** — registry module outputs `security_group_id` (not `sg_id`):
-   | Module Call | Old Reference | New Reference |
-   |---|---|---|
-   | `module "app_security_group"` call | `module.alb_security_group.sg_id` | `module.alb_security_group.security_group_id` |
-   | `module "load_balancer"` | `module.alb_security_group.sg_id` | `module.alb_security_group.security_group_id` |
-   | `module "autoscaling_group"` | `module.app_security_group.sg_id` | `module.app_security_group.security_group_id` |
-
-3. **Delete `modules/security-group/` directory** (no longer needed).
-
-4. **Add moved blocks** to `moved.tf` (2 entries — **SG base resources only**):
-   | From | To |
-   |---|---|
-   | `module.alb_security_group.aws_security_group.this` | `module.alb_security_group.aws_security_group.this[0]` |
-   | `module.app_security_group.aws_security_group.this` | `module.app_security_group.aws_security_group.this[0]` |
-
-   > **Critical limitation**: The registry module uses `aws_security_group_rule` (classic) while Phase 2 used `aws_vpc_security_group_*_rule` (VPC-native). These are **different resource types** — rules CANNOT be moved. Terraform will destroy the old VPC-native rules and create new classic rules. This is expected and unavoidable.
-
-5. **Run `terraform init`** (downloads registry module), then **`terraform plan`**.
-
-   > **Expected plan**: The SG resources show "has moved to" annotations. The old VPC-native rules are destroyed and new classic rules are created. This is NOT a zero-change plan — the rule type difference makes that impossible.
+  > Hint: if plan shows non-move diffs, inspect registry defaults. Override defaults that would change existing behavior.
 
 **Discussion points** (compare local vs registry):
-- Input surface area: registry modules often have dozens of variables; local modules have exactly what you need.
-- Output ergonomics: registry modules export many outputs; local modules export only what downstream consumers need.
-- Customization limits: registry modules may not support every edge case.
-- Upgrade/version management: registry modules can be pinned and upgraded independently.
-- When to break modules into their own repos vs monorepo.
-- Terraform Registry (public and private).
+- Build vs buy: small local module vs broad registry module surface area.
+- Version management with `~> 10.0`.
+- Why `create_security_group = false` is needed when SG is managed elsewhere.
+- Why `create_attachment = false` is needed when ASG manages target registration.
+- Registry defaults (for example `drop_invalid_header_fields`) may differ from API defaults.
 
 **Task conclusion**:
-Students gain practical experience consuming community modules and learn to evaluate the trade-offs between building custom modules (full control, minimal interface) and consuming registry modules (less code to maintain, broader feature set, version management overhead).
+Students gain practical experience consuming registry modules while preserving infrastructure continuity and state.
 
 ---
 
@@ -1381,18 +1262,17 @@ The `run_phase_deploy_local.ps1` script performs full deploy testing with local 
 |---|---|
 | Module basics (source, variables, outputs) | Phase 1, Tasks 2–6 |
 | Cross-module references | Phase 1, Tasks 4–6 |
-| Consumer rewiring during module extraction | Phase 1, Tasks 3–6; Phase 2, Tasks 9–10; Phase 3, Task 11 |
+| Consumer rewiring during module extraction | Phase 1, Tasks 3–6; Phase 2, Task 9; Phase 3, Task 10 |
 | `moved` blocks for safe refactoring | Phase 1, Tasks 2–6 (in-task, not deferred) |
 | `path.module` vs `path.root` | Phase 1, Task 6 |
 | Obsolete variable cleanup | Phase 1, Task 6 |
 | Module output ownership (ALB DNS) | Phase 1, Task 5 |
 | Mandatory moved cleanup | Phase 1, Task 8 |
-| Module reusability (same module, multiple calls) | Phase 2, Tasks 9–10 |
+| Module reusability (same module, multiple calls) | Phase 2, Task 9 |
 | `for_each` vs `count` trade-offs | Phase 2, Task 9 |
 | `count` → `for_each` migration | Phase 2, Task 9 |
-| Dynamic/generic modules with complex variable types | Phase 2, Task 10 |
-| Terraform Registry modules — build vs buy | Phase 3, Task 11 |
-| Version constraints in module `source` blocks | Phase 3, Task 11 |
+| Terraform Registry modules — build vs buy | Phase 3, Task 10 |
+| Version constraints in module `source` blocks | Phase 3, Task 10 |
 
 ---
 
