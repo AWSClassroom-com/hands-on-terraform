@@ -1,4 +1,0 @@
-# Temporary lab validation files
-# Ignore everything in this folder except this .gitignore file.
-*
-!.gitignore
