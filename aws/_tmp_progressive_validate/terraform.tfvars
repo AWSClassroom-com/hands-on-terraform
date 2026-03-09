@@ -1,9 +1,0 @@
-region               = "us-east-2"
-vpc_name             = "administ7403-vpc"
-vpc_cidr             = "192.168.0.0/20"
-route_table_name     = "administ7403-public-route-table"
-security_group_name  = "administ7403-allow-http-ssh"
-account              = "administ7403"
-instance_type        = "t3.small"
-instance_count_min   = 2
-instance_count_max   = 4
