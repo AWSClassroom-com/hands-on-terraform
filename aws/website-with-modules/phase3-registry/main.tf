@@ -15,7 +15,7 @@ locals {
 
   private_subnet_names_by_az = {
     for i, az in data.aws_availability_zones.available.names :
-    az => "${var.vpc_name}-private-${i}"
+    az => "${var.account}-${var.vpc_name}-private-${i}"
   }
 }
 
@@ -29,17 +29,17 @@ module "vpc" {
   source = "./modules/vpc"
 
   vpc_cidr = var.vpc_cidr
-  vpc_name = var.vpc_name
+  vpc_name = "${var.account}-${var.vpc_name}"
 }
 
 module "public_subnets" {
   source = "./modules/subnets"
 
   vpc_id             = module.vpc.vpc_id
-  vpc_name           = var.vpc_name
+  vpc_name           = "${var.account}-${var.vpc_name}"
   subnets            = local.public_subnets
   map_public_ip      = true
-  route_table_name   = var.route_table_name
+  route_table_name   = "${var.account}-${var.route_table_name}"
   route_target_type  = "igw"
   route_target_id    = module.vpc.igw_id
   subnet_name_prefix = "public"
@@ -49,7 +49,7 @@ module "private_subnets" {
   source = "./modules/subnets"
 
   vpc_id             = module.vpc.vpc_id
-  vpc_name           = var.vpc_name
+  vpc_name           = "${var.account}-${var.vpc_name}"
   subnets            = local.private_subnets
   map_public_ip      = false
   route_table_name   = null
@@ -63,7 +63,7 @@ module "security_groups" {
   source = "./modules/security-groups"
 
   vpc_id              = module.vpc.vpc_id
-  security_group_name = var.security_group_name
+  security_group_name = "${var.account}-${var.security_group_name}"
   account             = var.account
 }
 

@@ -1,11 +1,11 @@
 region               = "us-east-2"
-vpc_name             = "<userxx>-vpc"
-vpc_cidr             = "192.168.0.0/20"
-public_subnet_a_name = "<userxx>-public-subnet-a"
-public_subnet_a_cidr = "192.168.0.0/24"
-route_table_name     = "<userxx>-public-route-table"
-security_group_name  = "<userxx>-allow-http-ssh"
 account              = "<userxx>"
+vpc_name             = "vpc"
+vpc_cidr             = "192.168.0.0/20"
+public_subnet_a_name = "public-subnet-a"
+public_subnet_a_cidr = "192.168.0.0/24"
+route_table_name     = "public-route-table"
+security_group_name  = "allow-http-ssh"
 # VM variables
 instance_type        = "t3.small"
 instance_count_min   = 2

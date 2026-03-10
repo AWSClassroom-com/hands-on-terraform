@@ -1,17 +1,17 @@
 resource "aws_db_subnet_group" "rds" {
-  name       = var.db_subnet_group_name
+  name       = "${var.account}-${var.db_subnet_group_name}"
   subnet_ids = [aws_subnet.db_subnet_a.id, aws_subnet.db_subnet_b.id]
-  tags       = { Name = var.db_subnet_group_name }
+  tags       = { Name = "${var.account}-${var.db_subnet_group_name}" }
 }
 
 # --- Security Group (Modern Rules) ---
 resource "aws_security_group" "rds" {
-  name        = var.rds_security_group_name
+  name        = "${var.account}-${var.rds_security_group_name}"
   description = "Allow Postgres Access"
   vpc_id      = aws_vpc.custom-vpc.id
 
   tags = {
-    Name = var.rds_security_group_name
+    Name = "${var.account}-${var.rds_security_group_name}"
   }
 }
 
@@ -32,7 +32,7 @@ resource "aws_vpc_security_group_egress_rule" "allow_all" {
 
 # --- RDS Postgres ---
 resource "aws_db_instance" "postgres" {
-  identifier        = var.db_identifier
+  identifier        = "${var.account}-${var.db_identifier}"
   engine            = "postgres"
   engine_version    = var.db_engine_version
   instance_class    = var.db_instance_class
@@ -54,6 +54,6 @@ resource "aws_db_instance" "postgres" {
   deletion_protection = false
 
   tags = {
-    Name = var.db_identifier 
+    Name = "${var.account}-${var.db_identifier}" 
   }
 }

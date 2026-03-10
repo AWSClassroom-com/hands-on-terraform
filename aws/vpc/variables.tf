@@ -22,3 +22,8 @@ variable "route_table_name" {
   type        = string
   description = "Name of the route table for the VPC"
 }
+
+variable "account" {
+  type        = string
+  description = "Your IAM user account name used to log in to AWS (for example, user01 or user21). Used to prefix resource names."
+}

@@ -1,10 +1,10 @@
 resource "aws_security_group" "allow-http-ssh" {
-  name        = var.security_group_name
+  name        = "${var.account}-${var.security_group_name}"
   description = "Enable HTTP and SSH Access"
   vpc_id      = aws_vpc.custom-vpc.id
 
   tags = {
-    Name = var.security_group_name
+    Name = "${var.account}-${var.security_group_name}"
   }
 }
 

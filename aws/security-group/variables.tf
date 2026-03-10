@@ -26,3 +26,8 @@ variable "security_group_name" {
   type        = string
   description = "Name of the security group for the Web Servers"
 }
+
+variable "account" {
+  type        = string
+  description = "Your IAM user account name used to log in to AWS (for example, user01 or user21). Used to prefix resource names."
+}

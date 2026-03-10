@@ -6,7 +6,7 @@ resource "aws_subnet" "private_subnets" {
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
   tags = {
-    Name = "${var.vpc_name}-private-${count.index}"
+    Name = "${var.account}-${var.vpc_name}-private-${count.index}"
   }
 }
 

@@ -8,15 +8,15 @@ module "networking" {
   source = "./modules/networking"
 
   vpc_cidr         = var.vpc_cidr
-  vpc_name         = var.vpc_name
-  route_table_name = var.route_table_name
+  vpc_name         = "${var.account}-${var.vpc_name}"
+  route_table_name = "${var.account}-${var.route_table_name}"
 }
 
 module "security_groups" {
   source = "./modules/security-groups"
 
   vpc_id              = module.networking.vpc_id
-  security_group_name = var.security_group_name
+  security_group_name = "${var.account}-${var.security_group_name}"
   account             = var.account
 }
 
