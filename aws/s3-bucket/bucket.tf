@@ -1,9 +1,9 @@
 resource "aws_s3_bucket" "bucket" {
-  bucket_prefix       = "tf-state-userxx"
+  bucket_prefix       = "tf-state-<userxx>"
   # IMPORTANT: This must be here for Native Locking to work when remote state is enabled later - it cannot be added after creation
   object_lock_enabled = true
   tags = {
-    Name        = "userxx Terraform State Bucket"
+    Name        = "<userxx> Terraform State Bucket"
     Environment = "Prod"
   }
 }
