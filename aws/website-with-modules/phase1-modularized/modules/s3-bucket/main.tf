@@ -1,8 +1,8 @@
 resource "aws_s3_bucket" "bucket" {
-  bucket_prefix       = "tf-state-<userxx>"
+  bucket_prefix       = "tf-state-${var.account}"
   object_lock_enabled = true
   tags = {
-    Name        = "<userxx> Terraform State Bucket"
+    Name        = "${var.account} Terraform State Bucket"
     Environment = "Prod"
   }
 }

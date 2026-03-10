@@ -19,7 +19,7 @@ variable "security_group_name" {
   description = "Name of the security group for the Web Servers"
 }
 variable "account" {
-  description = "The name of the current user account."
+  description = "Your IAM user account name used to log in to AWS (for example, user01 or user21). Used to prefix resource names."
   type        = string
 }
 variable "image_id" {
