@@ -19,7 +19,7 @@ resource "aws_subnet" "subnet-a" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "${var.account}-${var.public_subnet_a_name}"
+    Name = "${var.account}-${var.vpc_name}-${var.public_subnet_a_name}"
   }
 }
 
