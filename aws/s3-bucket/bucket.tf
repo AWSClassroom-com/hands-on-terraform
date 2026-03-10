@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "bucket" {
-  bucket_prefix       = "tf-state-${var.account}"
+  bucket_prefix       = "tf-state-${var.account}-"
   # IMPORTANT: This must be here for Native Locking to work when remote state is enabled later - it cannot be added after creation
   object_lock_enabled = true
   tags = {
