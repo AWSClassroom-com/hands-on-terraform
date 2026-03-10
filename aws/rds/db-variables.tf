@@ -54,8 +54,3 @@ variable "db_allocated_storage" {
   description = "Allocated storage in GiB"
   default     = 20
 }
-
-variable "account" {
-  type        = string
-  description = "Your IAM user account name used to log in to AWS (for example, user01 or user21). Used to prefix resource names."
-}
