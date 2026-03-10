@@ -10,9 +10,9 @@ terraform {
   # uncomment the backend block below and run:
   # terraform init -migrate-state -backend-config="bucket=<YOUR_CREATED_BUCKET_NAME>" -backend-config="region=<REGION>"
   # 
-  # backend "s3" {
-  #   key    = "aws/my-app/terraform.tfstate"
-  # }
+  backend "s3" {
+    key    = "aws/my-app/terraform.tfstate"
+  }
 }
 
 provider "aws" {

@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "bucket" {
-  bucket_prefix       = "tf-state-${var.account}"
+  bucket_prefix       = "tf-state-${var.account}-"
   object_lock_enabled = true
   tags = {
     Name        = "${var.account} Terraform State Bucket"

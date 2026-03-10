@@ -26,15 +26,15 @@ moved {
 
 moved {
   from = module.networking.aws_subnet.private_subnets[0]
-  to   = module.private_subnets.aws_subnet.subnets["us-east-2a"]
+  to   = module.private_subnets.aws_subnet.subnets["<az-for-index-0>"]
 }
 moved {
   from = module.networking.aws_subnet.private_subnets[1]
-  to   = module.private_subnets.aws_subnet.subnets["us-east-2b"]
+  to   = module.private_subnets.aws_subnet.subnets["<az-for-index-1>"]
 }
 moved {
   from = module.networking.aws_subnet.private_subnets[2]
-  to   = module.private_subnets.aws_subnet.subnets["us-east-2c"]
+  to   = module.private_subnets.aws_subnet.subnets["<az-for-index-2>"]
 }
 moved {
   from = module.networking.aws_route_table.private_rt
@@ -42,13 +42,13 @@ moved {
 }
 moved {
   from = module.networking.aws_route_table_association.private_assoc[0]
-  to   = module.private_subnets.aws_route_table_association.assoc["us-east-2a"]
+  to   = module.private_subnets.aws_route_table_association.assoc["<az-for-index-0>"]
 }
 moved {
   from = module.networking.aws_route_table_association.private_assoc[1]
-  to   = module.private_subnets.aws_route_table_association.assoc["us-east-2b"]
+  to   = module.private_subnets.aws_route_table_association.assoc["<az-for-index-1>"]
 }
 moved {
   from = module.networking.aws_route_table_association.private_assoc[2]
-  to   = module.private_subnets.aws_route_table_association.assoc["us-east-2c"]
+  to   = module.private_subnets.aws_route_table_association.assoc["<az-for-index-2>"]
 }
