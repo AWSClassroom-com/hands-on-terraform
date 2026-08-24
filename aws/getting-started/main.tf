@@ -1,5 +1,5 @@
 resource "aws_instance" "vm" {
-  ami           = "ami-03ea746da1a2e36e7"
+  ami           = "<AMI ID you looked up>"
   instance_type = "t3.medium"
 
   tags = {

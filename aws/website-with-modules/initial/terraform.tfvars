@@ -9,4 +9,4 @@ security_group_name  = "allow-http-ssh"
 # VM variables
 instance_type        = "t3.small"
 instance_count_min   = 2
-instance_count_max   = 2
+instance_count_max   = 4
