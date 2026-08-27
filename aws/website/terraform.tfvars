@@ -7,6 +7,6 @@ public_subnet_a_cidr = "192.168.0.0/24"
 route_table_name     = "public-route-table"
 security_group_name  = "allow-http-ssh"
 # VM variables
-instance_type        = "t3.small"
-instance_count_min   = 2
-instance_count_max   = 2
+instance_type      = "t3.small"
+instance_count_min = 2
+instance_count_max = 2

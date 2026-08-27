@@ -43,7 +43,7 @@ variable "subnet_name_prefix" {
   description = "Prefix for subnet name tags"
 }
 
-variable "subnet_name_by_az" {
+variable "subnet_names_by_az" {
   type        = map(string)
   default     = {}
   description = "Optional per-AZ name overrides"

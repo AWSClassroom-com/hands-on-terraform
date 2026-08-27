@@ -54,6 +54,6 @@ resource "aws_db_instance" "postgres" {
   deletion_protection = false
 
   tags = {
-    Name = "${var.account}-${var.db_identifier}" 
+    Name = "${var.account}-${var.db_identifier}"
   }
 }

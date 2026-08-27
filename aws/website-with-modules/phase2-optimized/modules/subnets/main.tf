@@ -6,7 +6,7 @@ resource "aws_subnet" "subnets" {
   map_public_ip_on_launch = var.map_public_ip
 
   tags = {
-    Name = lookup(var.subnet_name_by_az, each.key, "${var.vpc_name}-${var.subnet_name_prefix}-${each.key}")
+    Name = lookup(var.subnet_names_by_az, each.key, "${var.vpc_name}-${var.subnet_name_prefix}-${each.key}")
   }
 }
 

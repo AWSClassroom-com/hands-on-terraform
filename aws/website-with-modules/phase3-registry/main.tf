@@ -56,7 +56,7 @@ module "private_subnets" {
   route_target_type  = "nat"
   route_target_id    = module.vpc.ngw_id
   subnet_name_prefix = "private"
-  subnet_name_by_az  = local.private_subnet_names_by_az
+  subnet_names_by_az = local.private_subnet_names_by_az
 }
 
 module "security_groups" {
@@ -97,7 +97,7 @@ module "load_balancer" {
       protocol          = "HTTP"
       port              = 80
       target_type       = "instance"
-      create_attachment  = false
+      create_attachment = false
 
       health_check = {
         path                = "/"

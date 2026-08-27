@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "bucket" {
-  bucket_prefix       = "tf-state-${var.account}-"
+  bucket_prefix = "tf-state-${var.account}-"
   tags = {
     Name        = "${var.account} Terraform State Bucket"
     Environment = "Prod"
